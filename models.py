@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# outdated from aksel
+
 import torch
 import torch.nn.functional as F
 import torch_geometric as pyg

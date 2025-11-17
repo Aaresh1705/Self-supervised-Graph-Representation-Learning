@@ -2,8 +2,9 @@ from tqdm import tqdm
 import torch.nn.functional as F
 import torch
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def train(model, device, optimizer, loader, feature_encoder, target_type):
+def train_supervised(model, device, optimizer, loader, feature_encoder, target_type):
     model.train()
     total_loss = 0.0
     for batch in tqdm(loader, desc="Training"):
@@ -19,7 +20,6 @@ def train(model, device, optimizer, loader, feature_encoder, target_type):
         total_loss += float(loss.detach())
     return total_loss / len(loader)                          # <-- use loader
 
-
 @torch.no_grad()
 def test(model, device, loader, feature_encoder, target_type):
     model.eval()
@@ -34,3 +34,72 @@ def test(model, device, loader, feature_encoder, target_type):
         total_correct += int((pred == y).sum())
         total_examples += y.size(0)
     return total_correct / total_examples
+
+def pretrain_gae():
+    data = load_data(remove_test=True)
+    gae_encoder, gae_decoder = make_gae()
+    node_embeddings = make_embeddings(data)
+    def train_gae(encoder, decoder, embeddings, data):
+        optimizer = torch.optim.Adam(  list(encoder.parameters())
+                                    + list(decoder.parameters())
+                                    + list(embeddings.parameters()), lr=0.01)
+        for epoch in range(100):
+            optimizer.zero_grad()
+            x_dict = get_x_dict(data, embeddings)
+            z = encoder(x_dict, data.edge_index_dict)
+            x = decoder(z["paper"])
+            loss = torch.nn.functional.mse_loss(x, data["paper"].x)
+            print(f"epoch: {epoch}, loss: {loss}")
+            loss.backward()
+            optimizer.step()
+        return encoder, decoder
+    encoder_decoder = train_gae(gae_encoder, gae_decoder, node_embeddings, dataset)
+    torch.save(encoder.state_dict(), "./gae_encoder")
+
+def pretrain_gmae():
+    code_size = 16
+    gamma = 1
+    gmae_mask_rate = .5
+    dataset = load_data(remove_test=True)
+
+    def sce_loss(true, pred, mask, eps=1e-8):
+        true = true[mask]
+        pred = pred[mask]
+        true_n = true / (true.norm(dim=-1, keepdim=True) + eps)
+        pred_n = pred / (pred.norm(dim=-1, keepdim=True) + eps)
+        loss = (1.0 - (true_n * pred_n).sum(dim=-1)).clamp(min=0) ** gamma
+        return loss.mean()
+
+    def train_gmae(encoder, decoder, mask_embedding, remask_embedding, node_embeddings, data):
+        optimizer = torch.optim.Adam(  list(encoder.parameters())
+                                    + list(decoder.parameters())
+                                    + list(node_embeddings.parameters())
+                                    + [mask_embedding, remask_embedding],
+                                    lr=0.01)
+        data = data.to(device)
+        paper_x = data["paper"].x.to(device)
+        num_paper = data["paper"].num_nodes
+        for epoch in range(2):
+            encoder.train()
+            decoder.train()
+            optimizer.zero_grad()
+            data = data.to(device)
+            x_dict = get_x_dict(data, node_embeddings)
+            mask = (torch.rand(num_paper, device=device) < gmae_mask_rate)
+            x_paper = x_dict["paper"].clone()
+            x_paper[mask] = mask_embedding
+            x_dict["paper"] = x_paper
+            z_dict = encoder(x_dict, data.edge_index_dict)
+            z_paper_masked = z_dict["paper"].clone()
+            z_paper_masked[mask] = remask_embedding
+            pred = decoder(z_paper_masked)
+            loss = sce_loss(paper_x, pred, mask)
+            print(f"epoch: {epoch}, loss: {loss}")
+            loss.backward()
+            optimizer.step()
+        return encoder, decoder
+
+    gmae_encode, gmae_decode, mask_embedding, remask_embedding = make_gmae()
+    node_embeddings = make_embeddings(dataset)
+    encoder, _ =train_gmae(gmae_encode, gmae_decode, mask_embedding, remask_embedding, node_embeddings, data)
+    torch.save(gmae_encoder.state_dict(), "./gmae_encoder")

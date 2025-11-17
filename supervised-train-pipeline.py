@@ -10,7 +10,6 @@ import lib
 from lib.model import train_node, eval_node_model
 from lib.model import GraphSAGE
 
-
 class EdgeDecoder(nn.Module):
     def __init__(self, emb_dim):
         super().__init__()
@@ -19,8 +18,6 @@ class EdgeDecoder(nn.Module):
     def forward(self, src_emb, dst_emb):
         z = torch.cat([src_emb, dst_emb], dim=1)
         return self.linear(z).view(-1)
-
-
 
 class HeteroFeatureEncoder(nn.Module):
     """
@@ -36,7 +33,6 @@ class HeteroFeatureEncoder(nn.Module):
     def forward(self, x_dict):
         # IMPORTANT: use per-key access (no zipping which can scramble dict order)
         return {nt: F.relu(self.encoders[nt](x)) for nt, x in x_dict.items()}
-
 
 if __name__ == '__main__':
     root_path = 'OGBN-MAG/'

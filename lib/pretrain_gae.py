@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 
-import torch
-from slop import subset_ogbn_mag_to_train_papers
+# moved to pipelines.py
 
-from models import make_gae, get_x_dict
-from data import load_dataset
+import torch
+
+from model import make_gae, get_x_dict, make_embeddings
+from dataset import load_data
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-data = load_dataset(remove_test=True)
+data = load_data(remove_test=True)
 gae_encoder, gae_decoder = make_gae()
 node_embeddings = make_embeddings(data)
 

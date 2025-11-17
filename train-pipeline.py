@@ -1,109 +1,76 @@
+import torch.nn as nn
 import torch
+from torch_geometric.nn import to_hetero
 import torch.nn.functional as F
-from torch_geometric.nn import SAGEConv, to_hetero
-from torch_geometric.datasets import OGB_MAG
-from torch_geometric.loader import NeighborLoader
-from torch_geometric.transforms import ToUndirected
-from tqdm import tqdm
+from torch_geometric.transforms import Compose, ToUndirected
 
-# ------------------------------------------------------------
-# 1. Load dataset
-# ------------------------------------------------------------
-dataset = OGB_MAG(root='OGBN-MAG_preprocess/', preprocess='metapath2vec', transform=ToUndirected())
-data = dataset[0]
-print(data)
 
-# Target node type and feature/label info
-target_type = 'paper'
-num_features = data[target_type].x.size(-1)
-num_classes = int(data[target_type].y.max()) + 1
-
-# ------------------------------------------------------------
-# 2. Define a GraphSAGE model (homogeneous first)
-# ------------------------------------------------------------
-class GraphSAGE(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers=2):
+class HeteroFeatureEncoder(nn.Module):
+    """
+    Per-node-type linear projection so all node types end up with the same dim.
+    Pass an in_channels dict like: {'paper':128, 'author':256, ...}
+    """
+    def __init__(self, in_channels_dict, out_channels):
         super().__init__()
-        self.convs = torch.nn.ModuleList()
-        self.convs.append(SAGEConv(in_channels, hidden_channels))
-        for _ in range(num_layers - 2):
-            self.convs.append(SAGEConv(hidden_channels, hidden_channels))
-        self.convs.append(SAGEConv(hidden_channels, out_channels))
+        self.encoders = nn.ModuleDict({
+            nt: nn.Linear(in_ch, out_channels) for nt, in_ch in in_channels_dict.items()
+        })
 
-    def forward(self, x, edge_index):
-        for conv in self.convs[:-1]:
-            x = conv(x, edge_index)
-            x = F.relu(x)
-            x = F.dropout(x, p=0.5, training=self.training)
-        x = self.convs[-1](x, edge_index)
-        return x
+    def forward(self, x_dict):
+        # IMPORTANT: use per-key access (no zipping which can scramble dict order)
+        return {nt: F.relu(self.encoders[nt](x)) for nt, x in x_dict.items()}
 
-# ------------------------------------------------------------
-# 3. Convert it to handle heterogeneous graphs
-# ------------------------------------------------------------
-# to_hetero() automatically builds separate SAGEConv layers for each relation type.
-model = GraphSAGE(num_features, 128, num_classes)
-model = to_hetero(model, data.metadata(), aggr='sum')
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = model.to(device)
+if __name__ == '__main__':
+    from torch_geometric.loader import NeighborLoader
+    import lib
+    from lib.model import train, test
+    from lib.model import GraphSAGE_test
 
-# ------------------------------------------------------------
-# 4. Data loaders
-# ------------------------------------------------------------
-train_loader = NeighborLoader(
-    data,
-    input_nodes=(target_type, data[target_type].train_mask),
-    num_neighbors=[15, 10],
-    batch_size=1024,
-    shuffle=True,
-)
+    root_path = 'OGBN-MAG/'
+    transform = Compose([ToUndirected()])
+    preprocess = 'metapath2vec'
+    data = lib.dataset.load_data(root_path, transform=transform, preprocess=preprocess)
 
-val_loader = NeighborLoader(
-    data,
-    input_nodes=(target_type, data[target_type].val_mask),
-    num_neighbors=[15, 10],
-    batch_size=2048,
-)
+    target_type = "paper"
+    data_inductive = lib.dataset.to_inductive(data.clone(), target_type)
 
-# ------------------------------------------------------------
-# 5. Training setup
-# ------------------------------------------------------------
-optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
+    # Build per-type input dims for the encoder
+    in_channels_dict = {nt: data_inductive[nt].x.size(-1) for nt in data_inductive.node_types}
+    hidden_dim = 128  # common dim after projection (and GNN input dim)
+    num_classes = int(data_inductive[target_type].y.max()) + 1
 
-def train():
-    model.train()
-    total_loss = 0
-    for batch in tqdm(train_loader, desc="Training"):
-        batch = batch.to(device)
-        out = model(batch.x_dict, batch.edge_index_dict)
-        out = out[target_type][:batch[target_type].batch_size]
-        y = batch[target_type].y[:batch[target_type].batch_size].view(-1)
-        loss = F.cross_entropy(out, y)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        total_loss += float(loss)
-    return total_loss / len(train_loader)
+    train_loader = NeighborLoader(
+        data_inductive,
+        input_nodes=(target_type, data_inductive[target_type].train_mask),
+        num_neighbors=[15, 10],
+        batch_size=1024,
+        shuffle=True,
+        num_workers=0,
+    )
+    val_loader = NeighborLoader(
+        data,
+        input_nodes=(target_type, data[target_type].val_mask),
+        num_neighbors=[15, 10],
+        batch_size=2048,
+        num_workers=0,
+    )
 
-@torch.no_grad()
-def test(loader):
-    model.eval()
-    total_correct = total_examples = 0
-    for batch in loader:
-        batch = batch.to(device)
-        out = model(batch.x_dict, batch.edge_index_dict)
-        out = out[target_type][:batch[target_type].batch_size]
-        y = batch[target_type].y[:batch[target_type].batch_size].view(-1)
-        pred = out.argmax(dim=-1)
-        total_correct += int((pred == y).sum())
-        total_examples += y.size(0)
-    return total_correct / total_examples
+    # GNN expects the post-encoder dim as input
+    model = GraphSAGE_test(in_channels=hidden_dim, hidden_channels=hidden_dim, out_channels=num_classes)
+    model = to_hetero(model, data_inductive.metadata(), aggr='sum')
 
-# ------------------------------------------------------------
-# 6. Training loop
-# ------------------------------------------------------------
-for epoch in range(1, 6):
-    loss = train()
-    acc = test(val_loader)
-    print(f"Epoch {epoch:02d} | Loss: {loss:.4f} | Val Acc: {acc:.4f}")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'Running on {device}')
+
+    model = model.to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
+
+    # Per-type encoder projecting to hidden_dim
+    feature_encoder = HeteroFeatureEncoder(in_channels_dict, out_channels=hidden_dim).to(device)
+
+    for epoch in range(1, 6):
+        loss = train(model, device, optimizer, train_loader, feature_encoder, target_type)
+        acc = test(model, device, val_loader, feature_encoder, target_type)
+        print(f"Epoch {epoch:02d} | Loss: {loss:.4f} | Val Acc: {acc:.4f}")

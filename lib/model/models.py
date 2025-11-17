@@ -56,12 +56,12 @@ def make_gmae():
     ).to(device)
     gmae_encoder = pyg.nn.to_hetero(
         gmae_base_encoder,
-        dataset.metadata(),
+        metadata,
     ).to(device)
     gmae_decoder = pyg.nn.models.MLP([code_size, 128]).to(device)
     mask_embedding = torch.nn.Parameter(torch.zeros(128, device=device))
     remask_embedding = torch.nn.Parameter(torch.zeros(code_size, device=device))
-    return gmae_encode, gmae_decoder, mask_embedding, remask_embedding
+    return gmae_encoder, gmae_decoder, mask_embedding, remask_embedding
 
 def get_x_dict(data, embeddings):
     return {node_type: data[node_type].x if "x" in data[node_type] else embeddings[node_type].weight for node_type in data.node_types}

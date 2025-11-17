@@ -1,0 +1,1 @@
+from .ogb_mag import load_data, to_inductive

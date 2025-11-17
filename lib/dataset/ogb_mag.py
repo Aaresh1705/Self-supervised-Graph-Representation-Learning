@@ -5,7 +5,6 @@ import torch
 
 def load_data(root='', preprocess='metapath2vec', transform=None) -> HeteroData:
     data = OGB_MAG(root=root, preprocess=preprocess, transform=transform)[0]
-
     return data
 
 
@@ -97,3 +96,12 @@ def to_inductive(data: HeteroData, node_type: str) -> HeteroData:
 #     num_true = mask.sum().item()  # count True values
 #     num_false = (~mask).sum().item()  # count False value
 #     print(f"True: {num_true}, False: {num_false}")
+
+metadata = (['paper', 'author', 'institution', 'field_of_study'], [('author', 'affiliated_with', 'institution'), ('author', 'writes', 'paper'), ('paper', 'cites', 'paper'), ('paper', 'has_topic', 'field_of_study'), ('institution', 'rev_affiliated_with', 'author'), ('paper', 'rev_writes', 'author'), ('paper', 'rev_cites', 'paper'), ('field_of_study', 'rev_has_topic', 'paper')])
+
+def load_dataset(remove_test=False):
+    dataset = pyg.datasets.OGB_MAG("./data")[0]
+    if remove_test:
+        dataset = subset_ogbn_mag_to_train_papers(dataset)
+    dataset = pyg.transforms.ToUndirected(merge=False)(dataset)
+    return dataset

@@ -1,2 +1,2 @@
-from .pipelines import train, test
-from .models import GraphSAGE_test
+from .pipelines import train_node, eval_node_model
+from .models import GraphSAGE

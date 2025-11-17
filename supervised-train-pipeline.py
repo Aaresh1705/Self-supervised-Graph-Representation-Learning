@@ -1,8 +1,25 @@
-import torch.nn as nn
 import torch
-from torch_geometric.nn import to_hetero
+import torch.nn as nn
 import torch.nn.functional as F
+
+from torch_geometric.nn import to_hetero
 from torch_geometric.transforms import Compose, ToUndirected
+from torch_geometric.loader import NeighborLoader
+
+import lib
+from lib.model import train_node, eval_node_model
+from lib.model import GraphSAGE
+
+
+class EdgeDecoder(nn.Module):
+    def __init__(self, emb_dim):
+        super().__init__()
+        self.linear = nn.Linear(emb_dim * 2, 1)
+
+    def forward(self, src_emb, dst_emb):
+        z = torch.cat([src_emb, dst_emb], dim=1)
+        return self.linear(z).view(-1)
+
 
 
 class HeteroFeatureEncoder(nn.Module):
@@ -22,15 +39,11 @@ class HeteroFeatureEncoder(nn.Module):
 
 
 if __name__ == '__main__':
-    from torch_geometric.loader import NeighborLoader
-    import lib
-    from lib.model import train, test
-    from lib.model import GraphSAGE_test
-
     root_path = 'OGBN-MAG/'
-    transform = Compose([ToUndirected()])
+    transform = Compose([ToUndirected(merge=False)])
     preprocess = 'metapath2vec'
     data = lib.dataset.load_data(root_path, transform=transform, preprocess=preprocess)
+    print(data.edge_types)
 
     target_type = "paper"
     data_inductive = lib.dataset.to_inductive(data.clone(), target_type)
@@ -57,7 +70,7 @@ if __name__ == '__main__':
     )
 
     # GNN expects the post-encoder dim as input
-    model = GraphSAGE_test(in_channels=hidden_dim, hidden_channels=hidden_dim, out_channels=num_classes)
+    model = GraphSAGE(in_channels=hidden_dim, hidden_channels=hidden_dim, out_channels=num_classes)
     model = to_hetero(model, data_inductive.metadata(), aggr='sum')
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -70,7 +83,21 @@ if __name__ == '__main__':
     # Per-type encoder projecting to hidden_dim
     feature_encoder = HeteroFeatureEncoder(in_channels_dict, out_channels=hidden_dim).to(device)
 
-    for epoch in range(1, 6):
-        loss = train(model, device, optimizer, train_loader, feature_encoder, target_type)
-        acc = test(model, device, val_loader, feature_encoder, target_type)
+    edge_decoder = EdgeDecoder(hidden_dim)
+
+    for epoch in range(1, 20):
+        loss = train_node(
+            model, device, optimizer, train_loader,
+            feature_encoder,
+            target_type='paper',
+        )
+        acc = eval_node_model(
+            model,
+            device,
+            val_loader,
+            feature_encoder,
+            task_type="node",
+            target_type='paper',
+            edge_decoder=edge_decoder
+        )
         print(f"Epoch {epoch:02d} | Loss: {loss:.4f} | Val Acc: {acc:.4f}")

@@ -2,6 +2,7 @@ from tqdm import tqdm
 import torch.nn.functional as F
 import torch
 
+
 def train(model, device, optimizer, loader, feature_encoder, target_type):
     model.train()
     total_loss = 0.0
@@ -17,6 +18,7 @@ def train(model, device, optimizer, loader, feature_encoder, target_type):
         optimizer.step()
         total_loss += float(loss.detach())
     return total_loss / len(loader)                          # <-- use loader
+
 
 @torch.no_grad()
 def test(model, device, loader, feature_encoder, target_type):

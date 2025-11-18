@@ -7,6 +7,6 @@ from torch_geometric.transforms import Compose, ToUndirected
 
 transform = Compose([ToUndirected(merge=False)])
 preprocess = 'metapath2vec'
-data = lib.dataset.load_data("", transform=transform, preprocess=preprocess)
+data = lib.dataset.load_data("OGBN-MAG/", transform=transform, preprocess=preprocess)
 
 pretrain_gmae(data)

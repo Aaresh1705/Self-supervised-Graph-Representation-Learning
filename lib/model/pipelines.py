@@ -1,41 +1,194 @@
 from tqdm import tqdm
 import torch.nn.functional as F
+from torch import nn
 import torch
+from sklearn.metrics import roc_auc_score, average_precision_score
 
 from . import models
  
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def train_supervised(model, device, optimizer, loader, feature_encoder, target_type):
-    model.train()
-    total_loss = 0.0
-    for batch in tqdm(loader, desc="Training"):
-        batch = batch.to(device)
-        x_dict = feature_encoder(batch.x_dict)               # <-- encode the BATCH
-        out_dict = model(x_dict, batch.edge_index_dict)      # <-- run on the BATCH
-        out = out_dict[target_type][:batch[target_type].batch_size]
-        y = batch[target_type].y[:batch[target_type].batch_size].view(-1)
-        loss = F.cross_entropy(out, y)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        total_loss += float(loss.detach())
-    return total_loss / len(loader)                          # <-- use loader
 
-@torch.no_grad()
-def test(model, device, loader, feature_encoder, target_type):
-    model.eval()
-    total_correct = total_examples = 0
-    for batch in loader:
-        batch = batch.to(device)
-        x_dict = feature_encoder(batch.x_dict)               # <-- encode the BATCH
-        out_dict = model(x_dict, batch.edge_index_dict)      # <-- run on the BATCH
-        out = out_dict[target_type][:batch[target_type].batch_size]
-        y = batch[target_type].y[:batch[target_type].batch_size].view(-1)
-        pred = out.argmax(dim=-1)
-        total_correct += int((pred == y).sum())
-        total_examples += y.size(0)
-    return total_correct / total_examples
+class SupervisedNodePredictions:
+    def __init__(self, model, device, optimizer, target_type):
+        self.model = model
+        self.device = device
+        self.optimizer = optimizer
+        self.target_type = target_type
+
+        self.classifier = self.Classifier(model.output_dim, model.num_classes).to(self.device)
+
+    class Classifier(nn.Module):
+        def __init__(self, output_dim, num_classes):
+            super().__init__()
+            self.head = nn.Linear(output_dim, num_classes)
+        def forward(self, Z, node_idx):
+            Z_batch = Z[node_idx]           # select the relevant nodes
+            logits = self.head(Z_batch)     # shape [batch_size, num_classes]
+            return logits
+
+    def train(self, loader):
+        self.model.train()
+        self.classifier.train()
+
+        total_loss = 0.0
+        for batch in tqdm(loader, desc="Training"):
+            self.optimizer.zero_grad()
+            batch = batch.to(self.device)
+
+            h_dict = self.model(batch.x_dict, batch.edge_index_dict)  # <-- run on the BATCH
+            Z = h_dict[self.target_type]  # node embeddings for this type
+
+            # Which nodes in this batch?
+            node_idx = torch.arange(
+                batch[self.target_type].batch_size,
+                device=device
+            )
+
+            # Apply classifier on just the batch nodes
+            logits = self.classifier(Z, node_idx)
+
+            # Labels
+            y = batch[self.target_type].y[:batch[self.target_type].batch_size].view(-1)
+
+            # Compute loss
+            loss = F.cross_entropy(logits, y)
+            loss.backward()
+            self.optimizer.step()
+
+            total_loss += float(loss.detach())
+        return total_loss / len(loader)  # <-- use loader
+
+    @torch.no_grad()
+    def test(self, loader):
+        self.model.eval()
+        total_correct = total_examples = 0
+        for batch in tqdm(loader, desc='Validating'):
+            batch = batch.to(self.device)
+            x_dict = batch.x_dict
+            h_dict = self.model(x_dict, batch.edge_index_dict)  # <-- run on the BATCH
+            Z = h_dict[self.target_type]  # node embeddings for this type
+
+            node_idx = torch.arange(batch[self.target_type].batch_size, device=device)
+            logits = self.classifier(Z, node_idx)
+            pred = logits.argmax(dim=-1)  # ✅ Correct
+
+            # Labels
+            y = batch[self.target_type].y[:batch[self.target_type].batch_size].view(-1)
+
+            total_correct += int((pred == y).sum())
+            total_examples += y.size(0)
+        return total_correct / total_examples
+
+
+class SupervisedEdgePredictions:
+    def __init__(self, model, device, optimizer, target_edge_type):
+        self.model = model
+        self.device = device
+        self.optimizer = optimizer
+        self.target_edge_type = target_edge_type
+
+        self.src_type = target_edge_type[0]
+        self.dst_type = target_edge_type[2]
+
+        self.edge_decoder = self.DotProductDecoder()
+
+    class DotProductDecoder(nn.Module):
+        """
+        Simpler decoder that uses dot product between embeddings.
+        Good for symmetric relationships.
+        """
+        def __init__(self):
+            super().__init__()
+
+        def forward(self, src_emb, dst_emb):
+            logits = (src_emb * dst_emb).sum(dim=-1)
+            return logits
+
+    def train(self, loader):
+        self.model.train()
+        total_loss = 0.0
+
+        for batch in tqdm(loader, desc="Training"):
+            self.optimizer.zero_grad()
+            batch = batch.to(self.device)
+
+            h_dict = self.model(batch.x_dict, batch.edge_index_dict)  # <-- run on the BATCH
+
+            src_emb = h_dict[self.src_type]
+            dst_emb = h_dict[self.dst_type]
+
+            edge_label_index = batch[self.target_edge_type].edge_label_index
+            edge_labels = batch[self.target_edge_type].edge_label
+
+            src_indices = edge_label_index[0]
+            dst_indices = edge_label_index[1]
+
+            src_edge_emb = src_emb[src_indices]
+            dst_edge_emb = dst_emb[dst_indices]
+
+            logits = self.edge_decoder(src_edge_emb, dst_edge_emb)
+            loss = F.binary_cross_entropy_with_logits(logits, edge_labels)
+
+            loss.backward()
+            self.optimizer.step()
+
+            total_loss += float(loss.detach())
+
+        return total_loss / len(loader)  # <-- use loader
+
+    @torch.no_grad()
+    def test(self, loader):
+        self.model.eval()
+
+        all_probs = []
+        all_labels= []
+
+        total_correct = 0
+        total_examples = 0
+
+        for batch in tqdm(loader, desc='Validating'):
+            batch = batch.to(self.device)
+
+            h_dict = self.model(batch.x_dict, batch.edge_index_dict)  # <-- run on the BATCH
+
+            src_emb = h_dict[self.src_type]
+            dst_emb = h_dict[self.dst_type]
+
+            edge_label_index = batch[self.target_edge_type].edge_label_index
+            edge_labels = batch[self.target_edge_type].edge_label
+
+            src_indices = edge_label_index[0]
+            dst_indices = edge_label_index[1]
+
+            src_edge_emb = src_emb[src_indices]
+            dst_edge_emb = dst_emb[dst_indices]
+
+            logits = self.edge_decoder(src_edge_emb, dst_edge_emb)
+            probs = F.sigmoid(logits)
+
+            preds = (probs > 0.5).long()
+            total_correct += int((preds == edge_labels).sum())
+            total_examples += edge_labels.size(0)
+
+            all_probs.append(probs.cpu())
+            all_labels.append(edge_labels.cpu())
+
+        accuracy = total_correct / total_examples
+
+        # Compute AUROC and AUPRC
+        all_probs = torch.cat(all_probs).numpy()
+        all_labels = torch.cat(all_labels).numpy()
+
+        try:
+            auroc = roc_auc_score(all_labels, all_probs)
+            auprc = average_precision_score(all_labels, all_probs)
+        except:
+            auroc = 0.0
+            auprc = 0.0
+
+        return accuracy, auroc, auprc
+
 
 def pretrain_gae(data):
     gae_encoder, gae_decoder = make_gae()

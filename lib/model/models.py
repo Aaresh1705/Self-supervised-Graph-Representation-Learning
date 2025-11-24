@@ -6,10 +6,8 @@ import torch_geometric as pyg
 
 code_size = 16
 node_property_classes = 349
-embed_dim = 128
 
 metadata = (['paper', 'author', 'institution', 'field_of_study'], [('author', 'affiliated_with', 'institution'), ('author', 'writes', 'paper'), ('paper', 'cites', 'paper'), ('paper', 'has_topic', 'field_of_study'), ('institution', 'rev_affiliated_with', 'author'), ('paper', 'rev_writes', 'author'), ('paper', 'rev_cites', 'paper'), ('field_of_study', 'rev_has_topic', 'paper')])
-
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 class GraphSAGE(torch.nn.Module):
@@ -31,24 +29,17 @@ class GraphSAGE(torch.nn.Module):
 def make_gae():
     gae_encoder = pyg.nn.to_hetero(pyg.nn.models.GraphSAGE(
         in_channels=-1, # lazy init for auto hetero
-        hidden_channels=16,
+        hidden_channels=128,
         num_layers=2,
         out_channels=code_size,
     ).to(device), metadata)
     gae_decoder = pyg.nn.models.MLP([code_size, 128]).to(device)
     return gae_encoder, gae_decoder
 
-embed_dim = 128
-def make_embeddings(dataset):
-    node_embeddings = torch.nn.ModuleDict()
-    for node_type in ["author", "institution", "field_of_study"]:
-        node_embeddings[node_type] = torch.nn.Embedding(dataset.num_nodes_dict[node_type], embed_dim)
-    return node_embeddings
-        
 def make_gmae():
     gmae_base_encoder = pyg.nn.models.GraphSAGE(
         in_channels=-1,  # lazy init
-        hidden_channels=16,
+        hidden_channels=128,
         num_layers=2,
         out_channels=code_size,
     ).to(device)
@@ -61,22 +52,21 @@ def make_gmae():
     remask_embedding = torch.nn.Parameter(torch.zeros(code_size, device=device))
     return gmae_encoder, gmae_decoder, mask_embedding, remask_embedding
 
-def get_x_dict(data, embeddings):
-    return {node_type: data[node_type].x if "x" in data[node_type] else embeddings[node_type].weight for node_type in data.node_types}
+def get_x_dict(data):
+    return {node_type: data[node_type].x for node_type in data.node_types}
 
 class Readout(torch.nn.Module):
-    def __init__(self, in_dim, num_classes):
+    def __init__(self, num_classes):
         super().__init__()
-        self.lin = torch.nn.Linear(in_dim, num_classes)
+        self.lin = torch.nn.Linear(code_size, num_classes)
 
     def forward(self, x):
         return self.lin(x)
 
-class Pretrained(torch.nn.Module):
-    def __init__(self, encoder, code_size, num_classes):
-        self.encoder = encoder
-        self.readout = Readout(code_size, num_classes)
+class EdgeReadout(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = torch.nn.Linear(code_size * 2, 1)
 
     def forward(self, x):
-        z = self.encoder(x)
-        return self.readout(z)
+        return self.lin(x)

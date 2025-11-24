@@ -15,7 +15,6 @@ class SupervisedNodePredictions:
         self.device = device
         self.optimizer = optimizer
         self.target_type = target_type
-
         self.classifier = self.Classifier(model.output_dim, model.num_classes).to(self.device)
 
     class Classifier(nn.Module):
@@ -192,14 +191,12 @@ class SupervisedEdgePredictions:
 
 def pretrain_gae(data):
     gae_encoder, gae_decoder = make_gae()
-    node_embeddings = make_embeddings(data)
-    def train_gae(encoder, decoder, embeddings, data):
+    def train_gae(encoder, decoder, data):
         optimizer = torch.optim.Adam(  list(encoder.parameters())
-                                    + list(decoder.parameters())
-                                    + list(embeddings.parameters()), lr=0.01)
+                                    + list(decoder.parameters()), lr=0.01)
         for epoch in range(100):
             optimizer.zero_grad()
-            x_dict = models.get_x_dict(data, embeddings)
+            x_dict = models.get_x_dict(data)
             z = encoder(x_dict, data.edge_index_dict)
             x = decoder(z["paper"])
             loss = torch.nn.functional.mse_loss(x, data["paper"].x)
@@ -207,13 +204,14 @@ def pretrain_gae(data):
             loss.backward()
             optimizer.step()
         return encoder, decoder
-    encoder_decoder = train_gae(gae_encoder, gae_decoder, node_embeddings, dataset)
-    torch.save(encoder.state_dict(), "./gae_encoder")
+    encoder, decoder = train_gae(gae_encoder, gae_decoder, dataset)
+    return encoder
 
 def pretrain_gmae(data):
     code_size = 16
     gamma = 1
     gmae_mask_rate = .5
+    data = data.to(device)
 
     def sce_loss(true, pred, mask, eps=1e-8):
         true = true[mask]
@@ -223,21 +221,19 @@ def pretrain_gmae(data):
         loss = (1.0 - (true_n * pred_n).sum(dim=-1)).clamp(min=0) ** gamma
         return loss.mean()
 
-    def train_gmae(encoder, decoder, mask_embedding, remask_embedding, node_embeddings, data):
+    def train_gmae(encoder, decoder, mask_embedding, remask_embedding, data):
         optimizer = torch.optim.Adam( list(encoder.parameters())
                                     + list(decoder.parameters())
-                                    + list(node_embeddings.parameters())
                                     + [mask_embedding, remask_embedding],
                                     lr=0.01)
-        data = data.to(device)
-        paper_x = data["paper"].x.to(device)
+        paper_x = data["paper"].x
         num_paper = data["paper"].num_nodes
-        for epoch in range(10):
+        for epoch in range(2):
             encoder.train()
             decoder.train()
             optimizer.zero_grad()
             data = data.to(device)
-            x_dict = models.get_x_dict(data, node_embeddings)
+            x_dict = models.get_x_dict(data)
             mask = (torch.rand(num_paper, device=device) < gmae_mask_rate)
             x_paper = x_dict["paper"].clone()
             x_paper[mask] = mask_embedding
@@ -250,10 +246,74 @@ def pretrain_gmae(data):
             print(f"epoch: {epoch}, loss: {loss}")
             loss.backward()
             optimizer.step()
-        return encoder, decoder
 
-    gmae_encoder, gmae_decoder, mask_embedding, remask_embedding = models.make_gmae()
-    node_embeddings = models.make_embeddings(data)
-    encoder, _ = train_gmae(gmae_encoder, gmae_decoder, mask_embedding, remask_embedding, node_embeddings, data)
-    torch.save(gmae_encoder.state_dict(), "./gmae_encoder")
-    torch.save(node_embeddings.state_dict(), "./gmae_encoder_node_embeddings")
+    gmae_encoder, gmae_decoder, mask_embedding, remask_embedding = map(lambda p: p.to(device), models.make_gmae())
+    train_gmae(gmae_encoder, gmae_decoder, mask_embedding, remask_embedding, data)
+    return gmae_encoder
+
+@torch.no_grad()
+def test_node_readout(readout_model, loader):
+    readout_model.eval()
+    n_examples = 0
+    n_correct = 0
+    for z, y in tqdm(loader, "validating..."):
+        z = z.to(device)
+        y = y.to(device)
+        logits = readout_model(z)
+        pred = logits.argmax(dim=-1)
+        n_correct += int((pred == y).sum())
+        n_examples += y.size(0)
+    return n_correct / n_examples
+
+def train_node_readout(readout_model, loader):
+    readout_model.train()
+    optimizer = torch.optim.Adam(list(readout_model.parameters()), lr=0.003)
+    total_loss = 0.0
+    for z, y in tqdm(loader, "testing..."):
+        z = z.to(device)
+        y = y.to(device)
+        optimizer.zero_grad()
+        logits = readout_model(z)
+        loss = F.cross_entropy(logits, y)
+        loss.backward()
+        total_loss += float(loss.detach())
+        optimizer.step()
+    return total_loss / len(loader)
+
+def train_edge_readout(readout, loader):
+    readout.train()
+    optimizer = torch.optim.Adam(readout.parameters(), lr=1e-3)
+
+    total_loss = 0.0
+    total_examples = 0
+
+    for z_src, z_dst, y in tqdm(loader, "training..."):
+        optimizer.zero_grad()
+        h_src = readout(z_src)  
+        h_dst = readout(z_dst) 
+        logits = (h_src * h_dst).sum(dim=-1)
+        loss = F.binary_cross_entropy_with_logits(logits, y)
+        loss.backward()
+        optimizer.step()
+
+        batch_size = y.size(0)
+        total_loss += loss.item() * batch_size
+        total_examples += batch_size
+
+    return total_loss / max(total_examples, 1)
+
+@torch.no_grad()
+def test_edge_readout(readout, loader):
+    readout.eval()
+    total = 0
+    correct = 0
+
+    for z_src, z_dst, y in tqdm(loader, "validating ..."):
+        h_src = readout(z_src)
+        h_dst = readout(z_dst)
+        score = (h_src * h_dst).sum(dim=-1)
+        pred = ((score.sigmoid()) > 0.5).float()
+        correct += (pred == y).sum().item()
+        total += y.size(0)
+
+    return correct / max(total, 1)

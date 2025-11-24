@@ -5,8 +5,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from pretrain import get_x_dict, gae_encoder, gmae_encoder, code_size
+from torch_geometric.transforms import Compose, ToUndirected
+import lib
+from lib.model import get_x_dict, make_gmae, code_size, make_embeddings
+from lib.dataset import load_data
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -67,11 +69,20 @@ def train_paper_classifier(encoder, embeddings, data, code_size,
         )
     return readout
 
-gae_encoder.load_state_dict(torch.load("./gae_encoder", weights_only=True))
-gae_encoder.eval()
+transform = Compose([ToUndirected(merge=False)])
+preprocess = 'metapath2vec'
+data = lib.dataset.load_data("", transform=transform, preprocess=preprocess)
+
+gmae_encoder, _, mask_embedding, remask_embedding = make_gmae()
+node_embeddings = make_embeddings(data)
+gmae_encoder.load_state_dict(torch.load("./gmae_encoder", weights_only=True))
+node_embeddings.load_state_dict(torch.load("./gmae_encoder_node_embeddings", weights_only=True))
+
+gmae_encoder.eval()
+node_embeddings.eval()
 
 paper_clf = train_paper_classifier(
-    encoder=gae_encoder,   
+    encoder=gmae_encoder,   
     embeddings=node_embeddings,
     data=dataset,           
     code_size=code_size,

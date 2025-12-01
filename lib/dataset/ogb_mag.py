@@ -97,8 +97,6 @@ def to_inductive(data: HeteroData, node_type: str) -> HeteroData:
 #     num_false = (~mask).sum().item()  # count False value
 #     print(f"True: {num_true}, False: {num_false}")
 
-metadata = (['paper', 'author', 'institution', 'field_of_study'], [('author', 'affiliated_with', 'institution'), ('author', 'writes', 'paper'), ('paper', 'cites', 'paper'), ('paper', 'has_topic', 'field_of_study'), ('institution', 'rev_affiliated_with', 'author'), ('paper', 'rev_writes', 'author'), ('paper', 'rev_cites', 'paper'), ('field_of_study', 'rev_has_topic', 'paper')])
-
 def subset_ogbn_mag_to_train_papers(data: HeteroData) -> HeteroData:
     """
     Create a subgraph of ogbn-mag that contains only the *train* paper nodes

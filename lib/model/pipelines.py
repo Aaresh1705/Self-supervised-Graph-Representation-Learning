@@ -213,7 +213,7 @@ def pretrain_gmae(data):
     gmae_mask_rate = .5
     data = data.to(device)
 
-    def sce_loss(true, pred, mask, eps=1e-8):
+    def sce_loss(true, pred, mask, eps=1e-8): # need mask for determing whichn nodes were trained on
         true = true[mask]
         pred = pred[mask]
         true_n = true / (true.norm(dim=-1, keepdim=True) + eps)
@@ -228,7 +228,7 @@ def pretrain_gmae(data):
                                     lr=0.01)
         paper_x = data["paper"].x
         num_paper = data["paper"].num_nodes
-        for epoch in range(2):
+        for epoch in range(30):
             encoder.train()
             decoder.train()
             optimizer.zero_grad()
@@ -241,8 +241,9 @@ def pretrain_gmae(data):
             z_dict = encoder(x_dict, data.edge_index_dict)
             z_paper_masked = z_dict["paper"].clone()
             z_paper_masked[mask] = remask_embedding
-            pred = decoder(z_paper_masked)
-            loss = sce_loss(paper_x, pred, mask)
+            z_dict["paper"] = z_paper_masked
+            pred = decoder(z_dict, data.edge_index_dict)
+            loss = sce_loss(paper_x, pred["paper"], mask)
             print(f"epoch: {epoch}, loss: {loss}")
             loss.backward()
             optimizer.step()
@@ -269,7 +270,7 @@ def train_node_readout(readout_model, loader):
     readout_model.train()
     optimizer = torch.optim.Adam(list(readout_model.parameters()), lr=0.003)
     total_loss = 0.0
-    for z, y in tqdm(loader, "testing..."):
+    for z, y in tqdm(loader, "training..."):
         z = z.to(device)
         y = y.to(device)
         optimizer.zero_grad()
@@ -283,7 +284,6 @@ def train_node_readout(readout_model, loader):
 def train_edge_readout(readout, loader):
     readout.train()
     optimizer = torch.optim.Adam(readout.parameters(), lr=1e-3)
-
     total_loss = 0.0
     total_examples = 0
 

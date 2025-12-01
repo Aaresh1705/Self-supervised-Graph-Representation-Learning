@@ -20,12 +20,12 @@ paper_train_mask = data["paper"].train_mask
 paper_test_mask  = data["paper"].val_mask
 edge_type = ("paper", "has_topic", "field_of_study")
 edge_index = data[edge_type].edge_index   
-paper_idx  = edge_index[0]               
-fos_idx    = edge_index[1]              
+paper_idx = edge_index[0]               
+fos_idx = edge_index[1]              
 train_edge_mask = paper_train_mask[paper_idx]
 test_edge_mask = paper_test_mask[paper_idx]
 train_edge_index = edge_index[:, train_edge_mask]
-test_edge_index  = edge_index[:, test_edge_mask]
+test_edge_index  = edge_index #[:, test_edge_mask] allowed to see all edges during inference 
 
 model_type = "gmae" # or gae
 
@@ -63,7 +63,6 @@ def edge_index_to_loader(edge_index, z_paper, z_fos, batch_size=1024):
         torch.ones(num_pos, dtype=torch.float32),
         torch.zeros(num_pos, dtype=torch.float32),
     ], dim=0)
-
     dataset = TensorDataset(z_src, z_dst, y)
     return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 

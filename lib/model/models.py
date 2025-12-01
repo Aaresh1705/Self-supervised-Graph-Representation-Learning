@@ -7,7 +7,16 @@ import torch_geometric as pyg
 code_size = 16
 node_property_classes = 349
 
-metadata = (['paper', 'author', 'institution', 'field_of_study'], [('author', 'affiliated_with', 'institution'), ('author', 'writes', 'paper'), ('paper', 'cites', 'paper'), ('paper', 'has_topic', 'field_of_study'), ('institution', 'rev_affiliated_with', 'author'), ('paper', 'rev_writes', 'author'), ('paper', 'rev_cites', 'paper'), ('field_of_study', 'rev_has_topic', 'paper')])
+metadata = (['paper', 'author', 'institution', 'field_of_study'],
+            [('author', 'affiliated_with', 'institution'),
+             ('author', 'writes', 'paper'),
+             ('paper', 'cites', 'paper'),
+             ('paper', 'has_topic', 'field_of_study'),
+             ('institution', 'rev_affiliated_with', 'author'),
+             ('paper', 'rev_writes', 'author'),
+             ('paper', 'rev_cites', 'paper'),
+             ('field_of_study', 'rev_has_topic', 'paper')])
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 class GraphSAGE(torch.nn.Module):
@@ -47,7 +56,12 @@ def make_gmae():
         gmae_base_encoder,
         metadata,
     ).to(device)
-    gmae_decoder = pyg.nn.models.MLP([code_size, 128]).to(device)
+    gmae_decoder = pyg.nn.to_hetero(pyg.nn.models.GraphSAGE(
+        in_channels = code_size,
+        num_layers = 1,
+        hidden_channels=128,
+        out_channels=128
+    ), metadata).to(device)
     mask_embedding = torch.nn.Parameter(torch.zeros(128, device=device))
     remask_embedding = torch.nn.Parameter(torch.zeros(code_size, device=device))
     return gmae_encoder, gmae_decoder, mask_embedding, remask_embedding

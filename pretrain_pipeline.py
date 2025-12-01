@@ -12,7 +12,7 @@ pretrain_function = pretrain_gmae if model_type  == "gmae" else pretrain_gae
 
 transform = Compose([ToUndirected(merge=False)])
 preprocess = 'metapath2vec'
-data = lib.dataset.load_data("", transform=transform, preprocess=preprocess)
+data = lib.dataset.load_data("OGBN-MAG/", transform=transform, preprocess=preprocess)
 
 train_data = data.subgraph({
     "paper": data["paper"].train_mask.nonzero(as_tuple=False).view(-1)

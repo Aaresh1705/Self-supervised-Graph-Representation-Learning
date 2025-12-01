@@ -15,6 +15,7 @@ root_path = 'OGBN-MAG/'
 transform = Compose([ToUndirected(merge=False)])
 preprocess = 'metapath2vec'
 data = lib.dataset.load_data(root_path, transform=transform, preprocess=preprocess)
+
 num_classes = int(data["paper"].y.max()) + 1
 
 train_data = data.subgraph({
@@ -52,7 +53,7 @@ train_loader = dataset_to_loader(train_data)
 val_loader   = dataset_to_loader(val_data)
 print("embeddings generated")
 
-for epoch in range(200):
+for epoch in range(5):
     loss = train_node_readout(readout, train_loader)
     acc  = test_node_readout(readout, val_loader)
     print(f"Epoch {epoch:02d} | Loss: {loss:.4f} | Val Acc: {acc:.4f}")

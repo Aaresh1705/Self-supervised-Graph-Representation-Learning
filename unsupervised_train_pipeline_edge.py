@@ -15,7 +15,7 @@ print("loading data...")
 root_path = 'OGBN-MAG/'
 transform = Compose([ToUndirected(merge=False)])
 preprocess = 'metapath2vec'
-data = lib.dataset.load_data(root_path, transform=transform, preprocess=preprocess)
+data = lib.dataset.load_data(root_path, transform=transform, preprocess=preprocess).to(device)
 
 paper_train_mask = data["paper"].train_mask
 paper_test_mask  = data["paper"].val_mask

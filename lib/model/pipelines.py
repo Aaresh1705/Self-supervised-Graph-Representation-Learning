@@ -228,7 +228,7 @@ def pretrain_gmae(data):
                                     lr=0.01)
         paper_x = data["paper"].x
         num_paper = data["paper"].num_nodes
-        for epoch in range(30):
+        for epoch in range(300):
             encoder.train()
             decoder.train()
             optimizer.zero_grad()

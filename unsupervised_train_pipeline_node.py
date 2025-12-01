@@ -11,9 +11,10 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model_type = "gmae" # or gae
 
 print("loading data...")
+root_path = 'OGBN-MAG/'
 transform = Compose([ToUndirected(merge=False)])
 preprocess = 'metapath2vec'
-data = lib.dataset.load_data("", transform=transform, preprocess=preprocess).to(device)
+data = lib.dataset.load_data(root_path, transform=transform, preprocess=preprocess).to(device)
 num_classes = int(data["paper"].y.max()) + 1
 
 train_data = data.subgraph({

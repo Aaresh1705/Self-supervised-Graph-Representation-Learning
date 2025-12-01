@@ -12,9 +12,10 @@ import torch.nn.functional as F
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 print("loading data...")
+root_path = 'OGBN-MAG/'
 transform = Compose([ToUndirected(merge=False)])
 preprocess = 'metapath2vec'
-data = lib.dataset.load_data("", transform=transform, preprocess=preprocess)
+data = lib.dataset.load_data(root_path, transform=transform, preprocess=preprocess)
 
 paper_train_mask = data["paper"].train_mask
 paper_test_mask  = data["paper"].val_mask

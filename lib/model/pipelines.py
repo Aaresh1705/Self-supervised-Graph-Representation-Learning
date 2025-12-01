@@ -8,7 +8,6 @@ from . import models
  
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-
 class SupervisedNodePredictions:
     def __init__(self, model, device, optimizer, target_type):
         self.model = model
@@ -213,7 +212,7 @@ def pretrain_gmae(data):
     gmae_mask_rate = .5
     data = data.to(device)
 
-    def sce_loss(true, pred, mask, eps=1e-8): # need mask for determing whichn nodes were trained on
+    def sce_loss(true, pred, mask, eps=1e-8): # need mask for determing which nodes were trained on
         true = true[mask]
         pred = pred[mask]
         true_n = true / (true.norm(dim=-1, keepdim=True) + eps)

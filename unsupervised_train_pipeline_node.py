@@ -14,13 +14,13 @@ print("loading data...")
 root_path = 'OGBN-MAG/'
 transform = Compose([ToUndirected(merge=False)])
 preprocess = 'metapath2vec'
-data = lib.dataset.load_data(root_path, transform=transform, preprocess=preprocess).to(device)
+data = lib.dataset.load_data(root_path, transform=transform, preprocess=preprocess)
 num_classes = int(data["paper"].y.max()) + 1
 
 train_data = data.subgraph({
-    "paper": data["paper"].train_mask.nonzero(as_tuple=False).view(-1).to(device)
-})
-val_data = data # allowed to use already-seen nodes during inference
+    "paper": data["paper"].train_mask.nonzero(as_tuple=False).view(-1)
+}).to(device)
+val_data = data.to(device) # allowed to use already-seen nodes during inference
 #.data.subgraph({
 #    "paper": data["paper"].val_mask.nonzero(as_tuple=False).view(-1)
 #})

@@ -452,7 +452,7 @@ def pretrain_gae(data):
 
 def pretrain_gmae(data):
     code_size = 16
-    gamma = 1
+    gamma = 1.5
     gmae_mask_rate = .5
     data = data.to(device)
 

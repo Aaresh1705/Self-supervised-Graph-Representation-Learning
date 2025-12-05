@@ -64,7 +64,7 @@ def edge_index_to_loader(edge_index, z_paper, z_fos, batch_size=1024):
     y = torch.cat([
         torch.ones(num_pos, dtype=torch.float32),
         torch.zeros(num_pos, dtype=torch.float32),
-    ], dim=0)
+    ], dim=0).to(device)
     dataset = TensorDataset(z_src, z_dst, y)
     return DataLoader(dataset, batch_size=batch_size, shuffle=True) 
 

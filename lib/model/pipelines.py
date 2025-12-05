@@ -269,7 +269,7 @@ def pretrain_gae(data):
     def train_gae(encoder, decoder, data):
         optimizer = torch.optim.Adam(  list(encoder.parameters())
                                     + list(decoder.parameters()), lr=0.01)
-        for epoch in range(100):
+        for epoch in range(500):
             optimizer.zero_grad()
             x_dict = models.get_x_dict(data)
             z = encoder(x_dict, data.edge_index_dict)

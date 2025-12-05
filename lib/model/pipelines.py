@@ -108,14 +108,16 @@ class SupervisedEdgePredictions:
         return loss.item()
 
     @torch.no_grad()
-    def test(self, loader):
+    def test(self, loader, max_batches=None):
         self.model.eval()
 
         preds = []
         ground_truths = []
 
         pbar = tqdm(loader, desc="Validating")
+        batches = 0
         for batch in pbar:
+            batches += 1
             batch = batch.to(self.device)
 
             edge_label_index = batch[self.target_edge_type].edge_label_index
@@ -134,6 +136,8 @@ class SupervisedEdgePredictions:
             preds.append(pred)
 
             ground_truths.append(batch[self.target_edge_type].edge_label)
+            if (not max_batches is None) and batches > max_batches:
+                break
 
         pred = torch.cat(preds, dim=0).cpu().numpy()
         ground_truth = torch.cat(ground_truths, dim=0).cpu().numpy()

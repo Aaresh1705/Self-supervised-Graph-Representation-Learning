@@ -92,17 +92,24 @@ def get_x_dict(data):
     return {node_type: data[node_type].x for node_type in data.node_types}
 
 class Readout(torch.nn.Module):
-    def __init__(self, num_classes):
+    def __init__(self, out_size):
         super().__init__()
-        self.lin = torch.nn.Linear(code_size, num_classes)
+        self.lin = torch.nn.Linear(code_size, out_size)
 
     def forward(self, x):
         return self.lin(x)
 
-class EdgeReadout(torch.nn.Module):
-    def __init__(self):
+class FrozenEncoderWithEdgeReadout(torch.nn.Module):
+    def __init__(self, encoder):
         super().__init__()
-        self.lin = torch.nn.Linear(code_size * 2, 1)
+        self.encoder = encoder
+        self.src_readout = Readout(4)
+        self.dst_readout = Readout(4)
+        for parameter in self.encoder.parameters():
+            parameter.requires_grad = False
 
-    def forward(self, x):
-        return self.lin(x)
+    def forward(self, x_dict, edge_index):
+        return self.encoder(x_dict, edge_index)
+
+    def edge_classifier(self, z_src, z_dst):
+        return (self.src_readout(z_src) * self.dst_readout(z_dst)).sum(dim=-1)

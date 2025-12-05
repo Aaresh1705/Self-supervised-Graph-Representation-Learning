@@ -1,79 +1,120 @@
-import lib
-from lib.model import make_gmae, Readout, get_x_dict, train_edge_readout, test_edge_readout
-from lib.dataset import load_data
+import sys, os
+import copy
+
 import torch
 
+from torch_geometric.nn import to_hetero
 from torch_geometric.transforms import Compose, ToUndirected
-from torch_geometric.utils import negative_sampling
+from torch_geometric.loader import LinkNeighborLoader
 
-from torch.utils.data import TensorDataset, DataLoader
-import torch.nn.functional as F
+from tqdm import tqdm
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# We had a problem importing the lib package when a file was inside a folder
+# This fixed it
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, PROJECT_ROOT)
 
-print("loading data...")
-root_path = 'OGBN-MAG/'
-transform = Compose([ToUndirected(merge=False)])
-preprocess = 'metapath2vec'
-data = lib.dataset.load_data(root_path, transform=transform, preprocess=preprocess).to(device)
+from lib.dataset import load_data, to_inductive
+from lib.model import make_gmae, FrozenEncoderWithEdgeReadout, SupervisedEdgePredictions
 
-paper_train_mask = data["paper"].train_mask
-paper_test_mask  = data["paper"].val_mask
-edge_type = ("paper", "has_topic", "field_of_study")
-edge_index = data[edge_type].edge_index   
-paper_idx = edge_index[0]               
-fos_idx = edge_index[1]              
-train_edge_mask = paper_train_mask[paper_idx]
-test_edge_mask = paper_test_mask[paper_idx]
-train_edge_index = edge_index[:, train_edge_mask]
-test_edge_index  = edge_index[:, test_edge_mask]
+if __name__ == '__main__':
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model_type = "gmae"
+    print(f'Running on {device}')
 
-model_type = "gmae" # or gae
+    root_path = './'
+    transform = Compose([ToUndirected(merge=False)])
+    preprocess = 'metapath2vec'
+    data = load_data(root_path, transform=transform, preprocess=preprocess)
 
-print("loading model...")
-encoder, _, _, _ = make_gmae() if model_type == "gmae" else make_gae()
-encoder.load_state_dict(torch.load(model_type + "_encoder", map_location=device, weights_only=True))
-encoder.to(device)
-encoder.eval()
+    target_node_type = "paper"
+    target_edge_type = ('paper', 'has_topic', 'field_of_study')
+    data_inductive = to_inductive(copy.deepcopy(data), target_node_type)
 
-print("getting embeddings...")
-x_dict = get_x_dict(data)
-with torch.no_grad():
-    z_dict = encoder(x_dict, data.edge_index_dict)
-z_paper = z_dict["paper"].detach()            
-z_fos   = z_dict["field_of_study"].detach()  
-readout = Readout(4) # compress to 4-vector for cosine similarity
-readout.to(device)
 
-def edge_index_to_loader(edge_index, z_paper, z_fos, batch_size=1024):
-    pos_edge_index = edge_index
-    num_pos = pos_edge_index.size(1)
-    num_paper = z_paper.size(0)
-    num_fos   = z_fos.size(0)
-    neg_edge_index = negative_sampling(
-        pos_edge_index,
-        num_nodes=(num_paper, num_fos),
-        num_neg_samples=num_pos,
+    train_loader = LinkNeighborLoader(
+        data_inductive,
+        num_neighbors=[15, 10],
+        edge_label_index=(target_edge_type, data_inductive[target_edge_type].edge_index),
+        neg_sampling_ratio=1.0,
+        batch_size=2048,
+        shuffle=True,
     )
-    z_src_pos = z_paper[pos_edge_index[0]]
-    z_dst_pos = z_fos[pos_edge_index[1]]  
-    z_src_neg = z_paper[neg_edge_index[0]]
-    z_dst_neg = z_fos[neg_edge_index[1]]  
-    z_src = torch.cat([z_src_pos, z_src_neg], dim=0)
-    z_dst = torch.cat([z_dst_pos, z_dst_neg], dim=0)
-    y = torch.cat([
-        torch.ones(num_pos, dtype=torch.float32),
-        torch.zeros(num_pos, dtype=torch.float32),
-    ], dim=0).to(device)
-    dataset = TensorDataset(z_src, z_dst, y)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True) 
+    edge_index_all = data[target_edge_type].edge_index
+    src_papers = edge_index_all[0]
 
-print("building edge datasets...")
-train_loader = edge_index_to_loader(train_edge_index, z_paper, z_fos)
-test_loader  = edge_index_to_loader(test_edge_index,  z_paper, z_fos)
+    # Use papers val_mask to select validation edges
+    val_edge_mask = data['paper'].val_mask[src_papers]
+    val_edge_index = edge_index_all[:, val_edge_mask]
 
-print("training edge predictor...")
-for epoch in range(2):
-    loss = train_edge_readout(readout, train_loader)
-    acc  = test_edge_readout(readout, test_loader)
-    print(f"Epoch {epoch:02d} | Loss: {loss:.4f} | Test Acc: {acc:.4f}")
+    val_loader = LinkNeighborLoader(
+        data,
+        num_neighbors=[15, 10],
+        edge_label_index=(target_edge_type, val_edge_index),
+        neg_sampling_ratio=1.0,
+        batch_size=2048,
+        shuffle=False,
+    )
+
+    hidden_dim = 128
+
+    print("loading model...")
+    encoder, _, _, _ = make_gmae() if model_type == "gmae" else make_gae()
+    encoder.load_state_dict(torch.load(model_type + "_encoder", map_location=device, weights_only=True))
+    encoder.to(device)
+    encoder.eval()
+
+    model = FrozenEncoderWithEdgeReadout(encoder).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
+    pipeline = SupervisedEdgePredictions(
+        model=model,
+        device=device,
+        optimizer=optimizer,
+        target_edge_type=target_edge_type
+    )
+
+    best_auc = 0
+    save_path = "unsupervised/models/edge/"
+    os.makedirs(save_path, exist_ok=True)
+
+    max_steps = 300 
+    eval_every = 50
+    save_every = 50
+
+    step = 0
+    epoch = 0
+
+    pbar = tqdm(total=max_steps)
+    while step < max_steps:
+        print(f"=== Epoch {epoch} ===")
+        for batch in train_loader:
+            step += 1
+
+            loss = pipeline.train_on_batch(batch)
+
+            if step % eval_every == 0:
+                metrics = pipeline.test(val_loader, max_batches=30)
+                auc = metrics["AUC"]
+
+                pbar.write(
+                    f"AUC: {auc:.4f}"
+                )
+
+                if auc > best_auc:
+                    best_auc = auc
+                    torch.save(model.state_dict(), save_path + "best.pt")
+
+            if step % save_every == 0:
+                torch.save({
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "step": step,
+                    "epoch": epoch,
+                }, save_path + f"checkpoint_{step}.pt")
+
+            if step >= max_steps:
+                break
+
+            pbar.update(1)
+            epoch += 1

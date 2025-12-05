@@ -94,11 +94,12 @@ if __name__ == '__main__':
             loss = pipeline.train_on_batch(batch)
 
             if step % eval_every == 0:
-                metrics = pipeline.test(val_loader, max_batches=30)
+                metrics = pipeline.test(val_loader, max_batches=1)
                 auc = metrics["AUC"]
+                acc = metrics["acc"]
 
                 pbar.write(
-                    f"AUC: {auc:.4f}"
+                    f"AUC: {auc:.4f}, acc: {acc:.4f}"
                 )
 
                 if auc > best_auc:
@@ -115,6 +116,3 @@ if __name__ == '__main__':
 
             if step >= max_steps:
                 break
-
-            pbar.update(1)
-            epoch += 1

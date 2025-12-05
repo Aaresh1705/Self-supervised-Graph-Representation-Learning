@@ -28,16 +28,16 @@ val_data = data.to(device) # allowed to use already-seen nodes during inference
 
 print("loading model...")
 encoder, _, _, _ = make_gmae() if model_type == "gmae" else make_gae()
-encoder.load_state_dict(torch.load(model_type + "_encoder", map_location=device, weights_only=True))
+encoder.load_state_dict(torch.load(model_type + "_encoder", map_location=device, weights_only=true))
 encoder.to(device)
-encoder.eval()
-readout = Readout(num_classes).to(device)
+encoder.train()
+readout = readout(num_classes).to(device)
 
 def dataset_to_loader(d):
     x_dict = get_x_dict(d)
     x_dict = {k: v.to(device) for k, v in x_dict.items()}
-    with torch.no_grad():
-        z_dict = encoder(x_dict, d.edge_index_dict)
+    #with torch.no_grad():
+    z_dict = encoder(x_dict, d.edge_index_dict)
     z_paper = z_dict["paper"]
     z_paper = z_paper.detach().cpu()
     y_paper = d["paper"].y.cpu()
@@ -58,4 +58,4 @@ for epoch in range(5):
     acc  = test_node_readout(readout, val_loader)
     print(f"Epoch {epoch:02d} | Loss: {loss:.4f} | Val Acc: {acc:.4f}")
 
-torch.save(readout.state_dict(), model_type + "_readout")
+torch.save(readout.state_dict(), model_type + "node_readout")

@@ -145,6 +145,7 @@ class SupervisedEdgePredictions:
 
         return {
             "AUC": auc,
+            "acc": ((pred > .5) == ground_truth) / len(preds)
         }
 
 

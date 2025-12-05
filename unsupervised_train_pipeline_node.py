@@ -31,7 +31,7 @@ encoder, _, _, _ = make_gmae() if model_type == "gmae" else make_gae()
 encoder.load_state_dict(torch.load(model_type + "_encoder", map_location=device, weights_only=True))
 encoder.to(device)
 encoder.train()
-readout = readout(num_classes).to(device)
+readout = Readout(num_classes).to(device)
 
 def dataset_to_loader(d):
     x_dict = get_x_dict(d)

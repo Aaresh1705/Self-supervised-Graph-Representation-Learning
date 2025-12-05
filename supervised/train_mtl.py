@@ -1,100 +1,71 @@
 import sys, os
+import copy
+
+import torch
+
+from torch_geometric.nn import to_hetero
+from torch_geometric.transforms import Compose, ToUndirected
+from torch_geometric.loader import LinkNeighborLoader
+
+from tqdm import tqdm
+
+# We had a problem importing the lib package when a file was inside a folder
+# This fixed it
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
-
-import torch
-from torch_geometric.nn import to_hetero
-from torch_geometric.transforms import Compose, ToUndirected, RandomLinkSplit
-from torch_geometric.loader import LinkNeighborLoader
-
-import lib
-from lib.model import GraphSAGE
-from lib.model import SupervisedMTL
-
-import copy
+from lib.dataset import load_data, to_inductive
+from lib.model import GraphSAGE, SupervisedMTL
 
 
-def main():
+if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Running on {device}")
+    print(f'Running on {device}')
 
-    # --------------------------------------------------
-    # Load hetero MAG dataset
-    # --------------------------------------------------
-    root_path = '../'
+    root_path = './'
     transform = Compose([ToUndirected(merge=False)])
     preprocess = 'metapath2vec'
-
-    data = lib.dataset.load_data(root_path, transform=transform, preprocess=preprocess)
+    data = load_data(root_path, transform=transform, preprocess=preprocess)
 
     target_node_type = "paper"
     target_edge_type = ('paper', 'has_topic', 'field_of_study')
+    data_inductive = to_inductive(copy.deepcopy(data), target_node_type)
 
-    data_inductive = lib.dataset.to_inductive(copy.deepcopy(data), target_node_type)
-
-    hidden_dim = data[target_node_type].x.size(-1)
+    hidden_dim = 128
     num_classes = int(data[target_node_type].y.max()) + 1
 
-    # ------------------------------
-    # Split edges by paper train/val
-    # ------------------------------
-    edge_index_full = data[target_edge_type].edge_index
-    src_nodes = edge_index_full[0]
-
-    edge_index_inductive = data_inductive[target_edge_type].edge_index
-    src_ind = edge_index_inductive[0]
-    train_edges_inductive = edge_index_inductive[:, data_inductive[target_node_type].train_mask[src_ind]]
-
-    val_edges = edge_index_full[:, data[target_node_type].val_mask[src_nodes]]
-
-    # ------------------------------
-    # Build the model
-    # ------------------------------
-    base_model = GraphSAGE(
-        in_channels=hidden_dim,
-        out_channels=hidden_dim,
-        num_layers=2,
-        num_classes=num_classes
-    )
-
-    model = to_hetero(
-        base_model,
-        metadata=data_inductive.metadata(),
-        aggr="sum"
-    ).to(device)
-
-    # -------------------------
-    # Loaders
-    # -------------------------
     train_loader = LinkNeighborLoader(
         data_inductive,
         num_neighbors=[15, 10],
-        edge_label_index=(target_edge_type, train_edges_inductive),
+        edge_label_index=(target_edge_type,  data_inductive[target_edge_type].edge_index),
         neg_sampling_ratio=1.0,
         batch_size=2048,
         shuffle=True
     )
 
+    edge_index_all = data[target_edge_type].edge_index
+    src_papers = edge_index_all[0]
+
+    # Use papers val_mask to select validation edges
+    val_edge_mask = data['paper'].val_mask[src_papers]
+    val_edge_index = edge_index_all[:, val_edge_mask]
+
     val_loader = LinkNeighborLoader(
         data,
         num_neighbors=[15, 10],
-        edge_label_index=(target_edge_type, val_edges),
+        edge_label_index=(target_edge_type, val_edge_index),
         neg_sampling_ratio=1.0,
         batch_size=2048,
         shuffle=False
     )
 
-    # -------------------------
-    # MTL pipeline
-    # -------------------------
-    optimizer = torch.optim.Adam(
-        model.parameters(),  # includes classifier + decoder + loss params
-        lr=0.003,
-        weight_decay=1e-5
-    )
+    model = GraphSAGE(in_channels=hidden_dim, out_channels=hidden_dim, num_classes=num_classes)
+    model = to_hetero(model, data_inductive.metadata(), aggr='sum')
+    model = model.to(device)
 
-    trainer = SupervisedMTL(
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
+
+    pipeline = SupervisedMTL(
         model=model,
         device=device,
         optimizer=optimizer,
@@ -102,36 +73,51 @@ def main():
         target_edge_type=target_edge_type
     )
 
-    # -------------------------
-    # Training loop
-    # -------------------------
-    best_weighted_val = float("inf")
-    save_path = 'supervised/models/edge/'
-    for epoch in range(1, 11):
-        train_metrics = trainer.train(train_loader)
-        val_metrics = trainer.validate(val_loader)
-        weighted_val = val_metrics["weighted_loss"]  # MUCH cleaner now
+    best_loss = float("inf")
+    save_path = 'supervised/models/mtl/'
+    os.makedirs(save_path, exist_ok=True)
 
-        print(f"Epoch {epoch:02d} | "
-              f"Train Node Loss: {train_metrics['node_loss']:.4f} | "
-              f"Train Edge Loss: {train_metrics['edge_loss']:.4f} | "
-              f"Weighted Loss: {weighted_val:.4f} | "
-              f"Val Node Acc: {val_metrics['node_acc']:.4f} | "
-              f"Val Edge AUROC: {val_metrics['edge_auroc']:.4f} | "
-              f"AUPRC: {val_metrics['edge_auprc']:.4f}")
+    max_steps = 10_000
+    eval_every = 500
+    save_every = 500
 
-        torch.save({
-            "model_state": model.state_dict(),
-            "optimizer_state": optimizer.state_dict(),
-            "epoch": epoch
-        }, save_path+f"checkpoint_{epoch}.pt")
+    step = 0
+    epoch = 0
 
+    pbar = tqdm(total=max_steps)
+    while step < max_steps:
+        print(f"=== Epoch {epoch} ===")
+        for batch in train_loader:
+            step += 1
 
+            pipeline.train_on_batch(batch)
 
-        if weighted_val < best_weighted_val:
-            best_weighted_val = weighted_val
-            torch.save(model.state_dict(), save_path + "best.pt")
+            if step % eval_every == 0:
+                metrics = pipeline.test(val_loader)
+                loss = metrics["loss_total"]
 
+                print(
+                    f"AUC: {metrics['AUC']:.4f} | "
+                    f"Accuracy: {metrics['Accuracy']:.4f} | "
+                    f"Edge loss: {metrics['loss_edge']:.4f} | "
+                    f"Node loss: {metrics['loss_node']:.4f} | "
+                    f"Total Loss: {loss:.4f}"
+                )
 
-if __name__ == "__main__":
-    main()
+                if loss < best_loss:
+                    best_loss = loss
+                    torch.save(model.state_dict(), save_path + "best.pt")
+
+            if step % save_every == 0:
+                torch.save({
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "step": step,
+                    "epoch": epoch,
+                }, save_path + f"checkpoint_{step}.pt")
+
+            if step >= max_steps:
+                break
+
+            pbar.update(1)
+        epoch += 1

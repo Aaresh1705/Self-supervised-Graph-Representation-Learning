@@ -1,7 +1,5 @@
 import sys, os
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, PROJECT_ROOT)
-
+import copy
 
 import torch
 
@@ -9,24 +7,30 @@ from torch_geometric.nn import to_hetero
 from torch_geometric.transforms import Compose, ToUndirected
 from torch_geometric.loader import LinkNeighborLoader
 
-import lib
-from lib.model import SupervisedEdgePredictions
-from lib.model import GraphSAGE
+from tqdm import tqdm
 
-import copy
+# We had a problem importing the lib package when a file was inside a folder
+# This fixed it
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, PROJECT_ROOT)
 
+from lib.dataset import load_data, to_inductive
+from lib.model import SupervisedEdgePredictions, GraphSAGE
 
 
 if __name__ == '__main__':
-    root_path = '../'
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f'Running on {device}')
+
+    root_path = './'
     transform = Compose([ToUndirected(merge=False)])
     preprocess = 'metapath2vec'
-    data = lib.dataset.load_data(root_path, transform=transform, preprocess=preprocess)
+    data = load_data(root_path, transform=transform, preprocess=preprocess)
 
-    target_type = "paper"
-    data_inductive = lib.dataset.to_inductive(copy.deepcopy(data), target_type)
-
+    target_node_type = "paper"
     target_edge_type = ('paper', 'has_topic', 'field_of_study')
+    data_inductive = to_inductive(copy.deepcopy(data), target_node_type)
+
 
     train_loader = LinkNeighborLoader(
         data_inductive,
@@ -39,12 +43,12 @@ if __name__ == '__main__':
     edge_index_all = data[target_edge_type].edge_index
     src_papers = edge_index_all[0]
 
-    # Use paper's val_mask to select *validation edges*:
+    # Use papers val_mask to select validation edges
     val_edge_mask = data['paper'].val_mask[src_papers]
     val_edge_index = edge_index_all[:, val_edge_mask]
 
     val_loader = LinkNeighborLoader(
-        data,  # full graph for evaluation
+        data,
         num_neighbors=[15, 10],
         edge_label_index=(target_edge_type, val_edge_index),
         neg_sampling_ratio=1.0,
@@ -52,14 +56,10 @@ if __name__ == '__main__':
         shuffle=False,
     )
 
-    hidden_dim = 128  # common dim after projection (and GNN input dim)
+    hidden_dim = 128
 
-    # GNN expects the post-encoder dim as input
     model = GraphSAGE(in_channels=hidden_dim, out_channels=hidden_dim)
     model = to_hetero(model, data_inductive.metadata(), aggr='sum')
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f'Running on {device}')
     model = model.to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
@@ -70,27 +70,47 @@ if __name__ == '__main__':
         target_edge_type=target_edge_type
     )
 
-    best_acc = 0
-    save_path = 'supervised/models/edge/'
-    for epoch in range(10):
-        loss = pipeline.train(train_loader)
-        metrics = pipeline.test(val_loader)
+    best_auc = 0
+    save_path = "supervised/models/edge/"
+    os.makedirs(save_path, exist_ok=True)
 
-        auprc = metrics["auprc"]
+    max_steps = 10_000
+    eval_every = 500
+    save_every = 500
 
-        print(
-            f"Epoch {epoch:02d} | Loss: {loss:.4f} | "
-            f"Acc: {metrics['accuracy']:.4f} | "
-            f"AUROC: {metrics['auroc']:.4f} | "
-            f"AUPRC: {auprc:.4f}"
-        )
+    step = 0
+    epoch = 0
 
-        torch.save({
-            "model_state": model.state_dict(),
-            "optimizer_state": optimizer.state_dict(),
-            "epoch": epoch
-        }, save_path+f"checkpoint_{epoch}.pt")
+    pbar = tqdm(total=max_steps)
+    while step < max_steps:
+        print(f"=== Epoch {epoch} ===")
+        for batch in train_loader:
+            step += 1
 
-        if auprc > best_acc:
-            best_acc = auprc
-            torch.save(model.state_dict(), save_path+"best.pt")
+            loss = pipeline.train_on_batch(batch)
+
+            if step % eval_every == 0:
+                metrics = pipeline.test(val_loader)
+                auc = metrics["AUC"]
+
+                pbar.write(
+                    f"AUC: {auc:.4f}"
+                )
+
+                if auc > best_auc:
+                    best_auc = auc
+                    torch.save(model.state_dict(), save_path + "best.pt")
+
+            if step % save_every == 0:
+                torch.save({
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "step": step,
+                    "epoch": epoch,
+                }, save_path + f"checkpoint_{step}.pt")
+
+            if step >= max_steps:
+                break
+
+            pbar.update(1)
+        epoch += 1

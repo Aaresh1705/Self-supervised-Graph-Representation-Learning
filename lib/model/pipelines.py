@@ -1,19 +1,13 @@
-from tqdm import tqdm
 import numpy as np
-import torch.nn.functional as F
-from torch import nn
+
 import torch
-from sklearn.metrics import (
-    roc_auc_score,
-    average_precision_score,
-    f1_score,
-    balanced_accuracy_score,
-    precision_score,
-    recall_score
-)
+import torch.nn.functional as F
+
+from sklearn.metrics import roc_auc_score
+
+from tqdm import tqdm
 
 from lib.model.models import GraphSAGE
-
 from . import models
  
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -34,40 +28,41 @@ class SupervisedNodePredictions:
             self.optimizer.zero_grad()
             batch = batch.to(self.device)
 
-            h_dict = self.model(batch.x_dict, batch.edge_index_dict)  # <-- run on the BATCH
+            h_dict = self.model(batch.x_dict, batch.edge_index_dict)
 
-            seed_count = batch[self.target_type].batch_size
-            seed_idx = torch.arange(seed_count, device=self.device)
+            node_count = batch[self.target_type].batch_size
+            node_idx = torch.arange(node_count, device=self.device)
 
-            Z = h_dict[self.target_type]
-            logits = self.model.node_classifier(Z, seed_idx)
+            z = h_dict[self.target_type]
+            logits = self.model.node_classifier(z, node_idx)
 
-            y = batch[self.target_type].y[seed_idx]
+            y = batch[self.target_type].y[node_idx]
 
-            # Compute loss
             loss = F.cross_entropy(logits, y)
             loss.backward()
             self.optimizer.step()
 
             total_loss += float(loss.detach())
 
-        return total_loss / len(loader)  # <-- use loader
+        return total_loss / len(loader)
 
     @torch.no_grad()
     def test(self, loader):
         self.model.eval()
+
         total_correct = total_examples = 0
         for batch in tqdm(loader, desc='Validating'):
             batch = batch.to(self.device)
-            x_dict = batch.x_dict
-            h_dict = self.model(x_dict, batch.edge_index_dict)  # <-- run on the BATCH
-            Z = h_dict[self.target_type]  # node embeddings for this type
 
-            node_idx = torch.arange(batch[self.target_type].batch_size, device=self.device)
-            logits = self.model.node_classifier(Z, node_idx)
-            pred = logits.argmax(dim=-1)  # ✅ Correct
+            h_dict = self.model(batch.x_dict, batch.edge_index_dict)
 
-            # Labels
+            node_count = batch[self.target_type].batch_size
+            node_idx = torch.arange(node_count, device=self.device)
+
+            z = h_dict[self.target_type]
+            logits = self.model.node_classifier(z, node_idx)
+            pred = logits.argmax(dim=-1)
+
             y = batch[self.target_type].y[:batch[self.target_type].batch_size].view(-1)
 
             total_correct += int((pred == y).sum())
@@ -85,140 +80,67 @@ class SupervisedEdgePredictions:
         self.src_type = target_edge_type[0]
         self.dst_type = target_edge_type[2]
 
-    def train(self, loader):
+    def train_on_batch(self, batch):
         self.model.train()
-        total_loss = 0.0
+        self.optimizer.zero_grad()
 
-        pbar = tqdm(loader, desc="Training")
-        for batch in pbar:
-            self.optimizer.zero_grad()
-            batch = batch.to(self.device)
+        batch = batch.to(self.device)
 
-            h_dict = self.model(batch.x_dict, batch.edge_index_dict)  # <-- run on the BATCH
+        edge_label_index = batch[self.target_edge_type].edge_label_index
+        edge_labels = batch[self.target_edge_type].edge_label.float().to(self.device)
 
-            src_emb = h_dict[self.src_type]
-            dst_emb = h_dict[self.dst_type]
+        # Remove target edges from message passing
+        remove_mask = torch.isin(batch.edge_index_dict[self.target_edge_type], edge_label_index).all(dim=0).to(bool)
+        eid = batch[self.target_edge_type].edge_index
+        batch[self.target_edge_type].edge_index = eid[:, ~remove_mask]
 
-            edge_label_index = batch[self.target_edge_type].edge_label_index
-            edge_labels = batch[self.target_edge_type].edge_label.float().to(self.device)
+        h_dict = self.model(batch.x_dict, batch.edge_index_dict)
 
-            src_indices = edge_label_index[0]
-            dst_indices = edge_label_index[1]
+        z_src = h_dict[self.src_type][edge_label_index[0]]
+        z_dst = h_dict[self.dst_type][edge_label_index[1]]
 
-            src_edge_emb = src_emb[src_indices]
-            dst_edge_emb = dst_emb[dst_indices]
+        logits = self.model.edge_classifier(z_src, z_dst)
+        loss = F.binary_cross_entropy_with_logits(logits, edge_labels)
 
-            logits = self.model.edge_classifier(src_edge_emb, dst_edge_emb)
-            loss = F.binary_cross_entropy_with_logits(logits, edge_labels)
+        loss.backward()
+        self.optimizer.step()
 
-            probs = torch.sigmoid(logits)
-            preds = (probs > 0.5).float()
-            pos_mask = edge_labels == 1
-            batch_pos_acc = (preds[pos_mask] == 1).float().mean()
-
-            loss.backward()
-            self.optimizer.step()
-
-            pbar.set_postfix({
-                "loss": f"{loss.item():.4f}",
-                "acc": f"{batch_pos_acc:.4f}",
-            })
-
-            total_loss += float(loss.detach())
-
-        return total_loss / len(loader)  # <-- use loader
+        return loss.item()
 
     @torch.no_grad()
-    def test(self, loader, k=100):
+    def test(self, loader):
         self.model.eval()
 
-        all_probs = []
-        all_labels = []
+        preds = []
+        ground_truths = []
 
-        for batch in loader:
+        pbar = tqdm(loader, desc="Validating")
+        for batch in pbar:
             batch = batch.to(self.device)
+
+            edge_label_index = batch[self.target_edge_type].edge_label_index
+
+            # Remove target edges from message passing
+            remove_mask = torch.isin(batch.edge_index_dict[self.target_edge_type], edge_label_index).all(dim=0).to(bool)
+            eid = batch[self.target_edge_type].edge_index
+            batch[self.target_edge_type].edge_index = eid[:, ~remove_mask]
 
             h_dict = self.model(batch.x_dict, batch.edge_index_dict)
 
-            src_emb = h_dict[self.src_type]
-            dst_emb = h_dict[self.dst_type]
+            z_src = h_dict[self.src_type][edge_label_index[0]]
+            z_dst = h_dict[self.dst_type][edge_label_index[1]]
 
-            edge_label_index = batch[self.target_edge_type].edge_label_index
-            edge_labels = batch[self.target_edge_type].edge_label.float().to(self.device)
+            pred = self.model.edge_classifier(z_src, z_dst)
+            preds.append(pred)
 
-            src_idx = edge_label_index[0]
-            dst_idx = edge_label_index[1]
+            ground_truths.append(batch[self.target_edge_type].edge_label)
 
-            src_edge_emb = src_emb[src_idx]
-            dst_edge_emb = dst_emb[dst_idx]
-
-            logits = self.model.edge_classifier(src_edge_emb, dst_edge_emb)
-            probs = torch.sigmoid(logits)
-
-            all_probs.append(probs.cpu())
-            all_labels.append(edge_labels.cpu())
-
-        all_probs = torch.cat(all_probs).numpy()
-        all_labels = torch.cat(all_labels).numpy()
-
-        # ----------------------------------
-        # 1. ACCURACY (basic)
-        # ----------------------------------
-        preds = (all_probs > 0.5).astype(int)
-        accuracy = (preds == all_labels).mean()
-
-        # ----------------------------------
-        # 2. BALANCED ACCURACY
-        # ----------------------------------
-        try:
-            bacc = balanced_accuracy_score(all_labels, preds)
-        except:
-            bacc = 0.0
-
-        # ----------------------------------
-        # 3. F1 SCORE
-        # ----------------------------------
-        try:
-            f1 = f1_score(all_labels, preds)
-        except:
-            f1 = 0.0
-
-        # ----------------------------------
-        # 4. AUROC
-        # ----------------------------------
-        try:
-            auroc = roc_auc_score(all_labels, all_probs)
-        except:
-            auroc = 0.0
-
-        # ----------------------------------
-        # 5. AUPRC
-        # ----------------------------------
-        try:
-            auprc = average_precision_score(all_labels, all_probs)
-        except:
-            auprc = 0.0
-
-        # ----------------------------------
-        # 6. PRECISION@K
-        # ----------------------------------
-        topk_idx = np.argsort(-all_probs)[:k]
-        precision_at_k = all_labels[topk_idx].mean()
-
-        # ----------------------------------
-        # 7. RECALL@K
-        # ----------------------------------
-        total_positives = all_labels.sum()
-        recall_at_k = all_labels[topk_idx].sum() / total_positives
+        pred = torch.cat(preds, dim=0).cpu().numpy()
+        ground_truth = torch.cat(ground_truths, dim=0).cpu().numpy()
+        auc = roc_auc_score(ground_truth, pred)
 
         return {
-            "accuracy": accuracy,
-            "balanced_accuracy": bacc,
-            "f1": f1,
-            "auroc": auroc,
-            "auprc": auprc,
-            "precision@k": precision_at_k,
-            "recall@k": recall_at_k,
+            "AUC": auc,
         }
 
 
@@ -232,203 +154,113 @@ class SupervisedMTL:
 
         self.src_type, _, self.dst_type = target_edge_type
 
-    def train(self, loader):
+    def train_on_batch(self, batch):
         self.model.train()
+        self.optimizer.zero_grad()
 
-        total_node_loss = 0.0
-        total_edge_loss = 0.0
-        total_loss = 0.0
-        n_batches = 0
+        batch = batch.to(self.device)
 
-        pbar = tqdm(loader, desc="Training")
-        for batch in pbar:
-            n_batches += 1
-            batch = batch.to(self.device)
-            self.optimizer.zero_grad()
+        edge_label_index = batch[self.target_edge_type].edge_label_index
 
-            # --------------------------------------------------------
-            # 1) Encode heterogeneous batch
-            # --------------------------------------------------------
-            h_dict = self.model(batch.x_dict, batch.edge_index_dict)
+        remove_mask = torch.isin(batch.edge_index_dict[self.target_edge_type], edge_label_index).all(dim=0).to(bool)
+        eid = batch[self.target_edge_type].edge_index
+        batch[self.target_edge_type].edge_index = eid[:, ~remove_mask]
 
-            # --------------------------------------------------------
-            # 2) Edge task
-            # --------------------------------------------------------
-            edge_index = batch[self.target_edge_type].edge_label_index
-            edge_labels = batch[self.target_edge_type].edge_label.float()
+        h_dict = self.model(batch.x_dict, batch.edge_index_dict)
 
-            src_emb = h_dict[self.src_type][edge_index[0]]
-            dst_emb = h_dict[self.dst_type][edge_index[1]]
+        # Edge task
+        z_src = h_dict[self.src_type][edge_label_index[0]]
+        z_dst = h_dict[self.dst_type][edge_label_index[1]]
 
-            edge_logits = self.model.edge_classifier(src_emb, dst_emb)
-            loss_edge = F.binary_cross_entropy_with_logits(edge_logits, edge_labels)
+        edge_logits = self.model.edge_classifier(z_src, z_dst)
+        edge_labels = batch[self.target_edge_type].edge_label.float().to(self.device)
+        loss_edge = F.binary_cross_entropy_with_logits(edge_logits, edge_labels)
 
-            # Running edge accuracy
-            edge_probs = torch.sigmoid(edge_logits)
-            edge_preds = (edge_probs > 0.5).float()
-            pos_mask = edge_labels == 1
-            batch_edge_pos_acc = (edge_preds[pos_mask] == 1).float().mean()
+        # Node task
+        node_idx = torch.unique(edge_label_index[0])
 
-            # --------------------------------------------------------
-            # 3) Node task
-            # --------------------------------------------------------
-            Z = h_dict[self.target_node_type]
+        z = h_dict[self.target_node_type]
+        node_logits = self.model.node_classifier(z, node_idx)
 
-            # Node indices to supervise
-            if self.src_type == self.target_node_type:
-                node_idx = torch.unique(edge_index[0])
-            else:
-                node_idx = torch.arange(Z.size(0), device=self.device)
+        y = batch[self.target_node_type].y[node_idx]
+        loss_node = F.cross_entropy(node_logits, y)
 
-            node_logits = self.model.node_classifier(Z, node_idx)
-            node_labels = batch[self.target_node_type].y[node_idx]
+        # Combine loss
+        total_loss = loss_node + loss_edge
+        total_loss.backward()
 
-            loss_node = F.cross_entropy(node_logits, node_labels)
-
-            # Running node accuracy
-            node_preds = node_logits.argmax(dim=-1)
-            batch_node_acc = float((node_preds == node_labels).float().mean())
-
-            # --------------------------------------------------------
-            # 4) Combined Loss (Uncertainty-weighted)
-            # --------------------------------------------------------
-            batch_loss = self.model.weighted_loss(loss_node, loss_edge)
-            batch_loss.backward()
-            self.optimizer.step()
-
-            total_node_loss += loss_node.detach().item()
-            total_edge_loss += loss_edge.detach().item()
-            total_loss += batch_loss.detach().item()
-
-            pbar.set_postfix({
-                "node_acc": f"{batch_node_acc:.4f}",
-                "edge_acc": f"{batch_edge_pos_acc:.4f}",
-                "loss": f"{batch_loss:.4f}",
-                "node_loss": f"{loss_node:.4f}",
-                "edge_loss": f"{loss_edge:.4f}",
-                "(sigma_node|sigma_edge)": f"{self.model.weighted_loss.log_sigma_node.detach().item():.4f}|"
-                                           f"{self.model.weighted_loss.log_sigma_edge.detach().item():.4f}",
-            })
+        self.optimizer.step()
 
         return {
-            "node_loss": total_node_loss / n_batches,
-            "edge_loss": total_edge_loss / n_batches,
-            "total_loss": total_loss / n_batches,
+            "node_loss": loss_node.item(),
+            "edge_loss": loss_edge.item(),
+            "total_loss": total_loss.item(),
         }
 
     @torch.no_grad()
-    def validate(self, loader):
+    def test(self, loader):
         self.model.eval()
 
-        total_node_loss = 0.0
-        total_edge_loss = 0.0
-        n_node_batches = 0
-        n_edge_batches = 0
+        preds = []
+        ground_truths = []
+        total_correct = total_examples = 0
+        loss_dict = {'edge': [], 'node': [], 'total': []}
 
-        all_node_preds = []
-        all_node_labels = []
-        all_edge_probs = []
-        all_edge_labels = []
-
-        for batch in loader:
+        pbar = tqdm(loader, desc="Validating")
+        for batch in pbar:
             batch = batch.to(self.device)
 
-            # Shared encoder
+            edge_label_index = batch[self.target_edge_type].edge_label_index
+
+            # Remove target edges from message passing
+            remove_mask = torch.isin(batch.edge_index_dict[self.target_edge_type], edge_label_index).all(dim=0).to(bool)
+            eid = batch[self.target_edge_type].edge_index
+            batch[self.target_edge_type].edge_index = eid[:, ~remove_mask]
+
             h_dict = self.model(batch.x_dict, batch.edge_index_dict)
 
-            # ----------------------------------------------------
-            # NODE TASK
-            # ----------------------------------------------------
-            Z = h_dict[self.target_node_type]
-            node_labels_full = batch[self.target_node_type].y
+            # Edge task
+            z_src = h_dict[self.src_type][edge_label_index[0]]
+            z_dst = h_dict[self.dst_type][edge_label_index[1]]
 
-            mask = batch[self.target_node_type].val_mask
-            node_idx = mask.nonzero(as_tuple=True)[0]
+            edge_pred = self.model.edge_classifier(z_src, z_dst)
+            preds.append(edge_pred)
 
-            if len(node_idx) > 0:
-                node_logits = self.model.node_classifier(Z, node_idx)
-                node_labels = node_labels_full[node_idx]
+            ground_truths.append(batch[self.target_edge_type].edge_label)
 
-                loss_node = F.cross_entropy(node_logits, node_labels)
-                total_node_loss += loss_node.item()
-                n_node_batches += 1
-
-                node_preds = node_logits.argmax(dim=-1)
-                all_node_preds.append(node_preds.cpu())
-                all_node_labels.append(node_labels.cpu())
-
-            # ----------------------------------------------------
-            # EDGE TASK
-            # ----------------------------------------------------
-            edge_index = batch[self.target_edge_type].edge_label_index
-            edge_labels = batch[self.target_edge_type].edge_label.float()
-
-            src_emb = h_dict[self.src_type][edge_index[0]]
-            dst_emb = h_dict[self.dst_type][edge_index[1]]
-
-            edge_logits = self.model.edge_classifier(src_emb, dst_emb)
+            edge_logits = self.model.edge_classifier(z_src, z_dst)
+            edge_labels = batch[self.target_edge_type].edge_label.float().to(self.device)
             loss_edge = F.binary_cross_entropy_with_logits(edge_logits, edge_labels)
+            loss_dict['edge'].append(loss_edge.item())
 
-            total_edge_loss += loss_edge.item()
-            n_edge_batches += 1
+            # Node task
+            node_idx = torch.unique(edge_label_index[0])
 
-            probs = torch.sigmoid(edge_logits)
-            all_edge_probs.append(probs.cpu())
-            all_edge_labels.append(edge_labels.cpu())
+            z = h_dict[self.target_node_type]
+            node_logits = self.model.node_classifier(z, node_idx)
 
-        # ==========================
-        # GLOBAL NODE METRICS
-        # ==========================
-        if len(all_node_preds) > 0:
-            all_node_preds = torch.cat(all_node_preds)
-            all_node_labels = torch.cat(all_node_labels)
+            node_pred = node_logits.argmax(dim=-1)
+            y = batch[self.target_node_type].y[node_idx]
 
-            node_acc = (all_node_preds == all_node_labels).float().mean().item()
-            node_f1 = f1_score(all_node_labels, all_node_preds, average="micro")
-        else:
-            node_acc = 0.0
-            node_f1 = 0.0
+            total_correct += int((node_pred == y).sum())
+            total_examples += y.size(0)
 
-        # ==========================
-        # GLOBAL EDGE METRICS
-        # ==========================
-        all_edge_probs = torch.cat(all_edge_probs).numpy()
-        all_edge_labels = torch.cat(all_edge_labels).numpy()
+            loss_node = F.cross_entropy(node_logits, y)
+            loss_dict['node'].append(loss_node.item())
 
-        edge_acc = ((all_edge_probs > 0.5).astype(int) == all_edge_labels).mean()
+            total_loss = loss_node + loss_edge
+            loss_dict['total'].append(total_loss.item())
 
-        try:
-            edge_auroc = roc_auc_score(all_edge_labels, all_edge_probs)
-        except:
-            edge_auroc = 0.0
-
-        try:
-            edge_auprc = average_precision_score(all_edge_labels, all_edge_probs)
-        except:
-            edge_auprc = 0.0
-
-        # ==========================
-        # COMPUTE UNCERTAINTY-WEIGHTED VAL LOSS
-        # ==========================
-        avg_node_loss = total_node_loss / max(1, n_node_batches)
-        avg_edge_loss = total_edge_loss / max(1, n_edge_batches)
-
-        weighted_val_loss = (
-            self.model.weighted_loss(
-                torch.tensor(avg_node_loss, device=self.device),
-                torch.tensor(avg_edge_loss, device=self.device)
-            ).item()
-        )
+        pred = torch.cat(preds, dim=0).cpu().numpy()
+        ground_truth = torch.cat(ground_truths, dim=0).cpu().numpy()
+        auc = roc_auc_score(ground_truth, pred)
 
         return {
-            "node_loss": avg_node_loss,
-            "edge_loss": avg_edge_loss,
-            "weighted_loss": weighted_val_loss,
-            "node_acc": node_acc,
-            "node_f1": node_f1,
-            "edge_acc": edge_acc,
-            "edge_auroc": edge_auroc,
-            "edge_auprc": edge_auprc,
+            "AUC": auc,
+            "Accuracy": total_correct / total_examples,
+            "loss_edge": np.mean(loss_dict['edge']),
+            "loss_node": np.mean(loss_dict['node']),
+            "loss_total": np.mean(loss_dict['total'])
         }
 
 

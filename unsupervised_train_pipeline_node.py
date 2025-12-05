@@ -28,7 +28,7 @@ val_data = data.to(device) # allowed to use already-seen nodes during inference
 
 print("loading model...")
 encoder, _, _, _ = make_gmae() if model_type == "gmae" else make_gae()
-encoder.load_state_dict(torch.load(model_type + "_encoder", map_location=device, weights_only=true))
+encoder.load_state_dict(torch.load(model_type + "_encoder", map_location=device, weights_only=True))
 encoder.to(device)
 encoder.train()
 readout = readout(num_classes).to(device)

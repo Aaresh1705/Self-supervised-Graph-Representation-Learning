@@ -15,7 +15,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, PROJECT_ROOT)
 
 from lib.dataset import load_data
-from lib.model import SupervisedEdgePredictions, GraphSAGE
+from lib.model import SupervisedMTL, GraphSAGE
 
 
 @torch.no_grad()
@@ -29,7 +29,7 @@ def confusion_matrix_for_paper(model, data, paper_id, target_edge_type, device):
     h_dict = model(data.x_dict, data.edge_index_dict)
 
     paper_emb = h_dict[src_type][paper_id]  # [D]
-    field_emb = h_dict[dst_type]            # [num_fields, D]
+    field_emb = h_dict[dst_type]  # [num_fields, D]
 
     num_fields = field_emb.size(0)
 
@@ -61,15 +61,15 @@ def confusion_matrix_for_paper(model, data, paper_id, target_edge_type, device):
     print(f"FN (missed true edges):            {FN}")
     print(f"TN (correctly ignored fields):     {TN}")
     print("-------------------------------------------")
-    print(f"Positive Recall (TP / (TP+FN)):    {TP / max(TP+FN,1):.4f}")
-    print(f"Precision (TP / (TP+FP)):          {TP / max(TP+FP,1):.4f}")
-    print(f"Accuracy:                          {(TP+TN) / (TP+TN+FP+FN):.4f}")
+    print(f"Positive Recall (TP / (TP+FN)):    {TP / max(TP + FN, 1):.4f}")
+    print(f"Precision (TP / (TP+FP)):          {TP / max(TP + FP, 1):.4f}")
+    print(f"Accuracy:                          {(TP + TN) / (TP + TN + FP + FN):.4f}")
     print("-------------------------------------------")
 
     return {
         "TP": TP, "FP": FP, "FN": FN, "TN": TN,
-        "recall": TP / max(TP+FN, 1),
-        "precision": TP / max(TP+FP, 1),
+        "recall": TP / max(TP + FN, 1),
+        "precision": TP / max(TP + FP, 1),
         "accuracy": (TP + TN) / (TP + TN + FP + FN)
     }
 
@@ -134,11 +134,11 @@ def visualize_paper_prediction(model, data, paper_id, target_edge_type, device):
         is_pred = f in predicted_global
 
         if is_true and is_pred:
-            edge_color = "green"      # true positive
+            edge_color = "green"  # true positive
         elif is_true and not is_pred:
-            edge_color = "red"        # false negative
+            edge_color = "red"  # false negative
         elif is_pred and not is_true:
-            edge_color = "blue"       # false positive
+            edge_color = "blue"  # false positive
         else:
             continue
 
@@ -165,10 +165,10 @@ def visualize_paper_prediction(model, data, paper_id, target_edge_type, device):
     plt.axis("off")
 
     os.makedirs("plots", exist_ok=True)
-    plt.savefig("supervised/plots/paper_graph_prediction_edge.png", dpi=300)
+    plt.savefig("supervised/plots/paper_graph_prediction_mtl.png", dpi=300)
     plt.close()
 
-    print("Saved visualization to supervised/plots/paper_graph_prediction_edge.png")
+    print("Saved visualization to supervised/plots/paper_graph_prediction_mtl.png")
 
 
 if __name__ == "__main__":
@@ -183,10 +183,11 @@ if __name__ == "__main__":
     target_node_type = "paper"
     target_edge_type = ('paper', 'has_topic', 'field_of_study')
 
+
     edge_index_all = data[target_edge_type].edge_index
     src_papers = edge_index_all[0]
 
-    # Use papers val_mask to select validation edges:
+    # Use papers test_mask to select test edges:
     test_edge_mask = data['paper'].test_mask[src_papers]
     test_edge_index = edge_index_all[:, test_edge_mask]
 
@@ -200,26 +201,28 @@ if __name__ == "__main__":
     )
 
     hidden_dim = 128
+    num_classes = int(data[target_node_type].y.max()) + 1
 
-    model = GraphSAGE(in_channels=hidden_dim, out_channels=hidden_dim)
+    model = GraphSAGE(in_channels=hidden_dim, out_channels=hidden_dim, num_classes=num_classes)
     model = to_hetero(model, data.metadata(), aggr='sum')
     model = model.to(device)
 
-    best_model_path = "supervised/models/edge/best.pt"
+    best_model_path = "supervised/models/mtl/best.pt"
     print(f"Loading best model from: {best_model_path}")
 
     state_dict = torch.load(best_model_path, map_location=device)
     model.load_state_dict(state_dict)
 
-    pipeline = SupervisedEdgePredictions(
+    pipeline = SupervisedMTL(
         model=model,
         device=device,
         optimizer=None,
+        target_node_type=target_node_type,
         target_edge_type=target_edge_type
     )
 
     test_metrics = pipeline.test(test_loader)
-    print(f"\n=== Test AUC: {test_metrics['AUC']:.4f} ===\n")
+    print(f"\n=== Test AUC: {test_metrics['AUC']:.4f} Accuracy: {test_metrics['Accuracy']:.4f} ===\n")
 
     paper_id = torch.where(test_edge_mask)[0][0].item()
     visualize_paper_prediction(

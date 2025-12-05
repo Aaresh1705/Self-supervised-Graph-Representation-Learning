@@ -1,0 +1,33 @@
+Running on cuda
+=== Epoch 0 ===
+AUC: 0.9485
+✓ Saved new best model (AUC=0.9485)
+AUC: 0.9567
+✓ Saved new best model (AUC=0.9567)
+AUC: 0.9558
+AUC: 0.9578
+✓ Saved new best model (AUC=0.9578)
+AUC: 0.9613
+✓ Saved new best model (AUC=0.9613)
+AUC: 0.9653
+✓ Saved new best model (AUC=0.9653)
+=== Epoch 1 ===
+AUC: 0.9628
+AUC: 0.9658
+✓ Saved new best model (AUC=0.9658)
+AUC: 0.9635
+AUC: 0.9641
+AUC: 0.9654
+AUC: 0.9618
+=== Epoch 2 ===
+AUC: 0.9653
+AUC: 0.9637
+AUC: 0.9651
+AUC: 0.9653
+AUC: 0.9662
+✓ Saved new best model (AUC=0.9662)
+AUC: 0.9663
+✓ Saved new best model (AUC=0.9663)
+AUC: 0.9650
+=== Epoch 3 ===
+AUC: 0.9633

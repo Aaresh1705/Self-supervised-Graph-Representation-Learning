@@ -19,10 +19,6 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Running on {device}')
 
-    root_path = "./"
-    transform = Compose([ToUndirected(merge=False)])
-    preprocess = "metapath2vec"
-
     root_path = './'
     transform = Compose([ToUndirected(merge=False)])
     preprocess = 'metapath2vec'

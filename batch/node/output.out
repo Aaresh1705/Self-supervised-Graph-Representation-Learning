@@ -1,0 +1,11 @@
+Running on cuda
+Epoch 00 | Loss: 3.1003 | Val Acc: 0.3718
+Epoch 01 | Loss: 2.5855 | Val Acc: 0.4006
+Epoch 02 | Loss: 2.4858 | Val Acc: 0.4138
+Epoch 03 | Loss: 2.4172 | Val Acc: 0.4229
+Epoch 04 | Loss: 2.3735 | Val Acc: 0.4190
+Epoch 05 | Loss: 2.3338 | Val Acc: 0.4350
+Epoch 06 | Loss: 2.3053 | Val Acc: 0.4396
+Epoch 07 | Loss: 2.2813 | Val Acc: 0.4466
+Epoch 08 | Loss: 2.2640 | Val Acc: 0.4400
+Epoch 09 | Loss: 2.2485 | Val Acc: 0.4427

@@ -1,0 +1,25 @@
+Running on cuda
+=== Epoch 0 ===
+AUC: 0.9440 | Accuracy: 0.3653 | Edge loss: 0.4430 | Node loss: 2.3667 | Total Loss: 2.8097
+AUC: 0.9506 | Accuracy: 0.4067 | Edge loss: 0.4385 | Node loss: 2.1573 | Total Loss: 2.5958
+AUC: 0.9492 | Accuracy: 0.4304 | Edge loss: 0.4362 | Node loss: 2.0447 | Total Loss: 2.4810
+AUC: 0.9525 | Accuracy: 0.4468 | Edge loss: 0.4352 | Node loss: 1.9782 | Total Loss: 2.4134
+AUC: 0.9532 | Accuracy: 0.4588 | Edge loss: 0.4352 | Node loss: 1.9286 | Total Loss: 2.3639
+AUC: 0.9532 | Accuracy: 0.4598 | Edge loss: 0.4355 | Node loss: 1.9168 | Total Loss: 2.3523
+=== Epoch 1 ===
+AUC: 0.9508 | Accuracy: 0.4684 | Edge loss: 0.4356 | Node loss: 1.8843 | Total Loss: 2.3200
+AUC: 0.9538 | Accuracy: 0.4716 | Edge loss: 0.4350 | Node loss: 1.8622 | Total Loss: 2.2972
+AUC: 0.9540 | Accuracy: 0.4708 | Edge loss: 0.4347 | Node loss: 1.8697 | Total Loss: 2.3044
+AUC: 0.9513 | Accuracy: 0.4775 | Edge loss: 0.4360 | Node loss: 1.8423 | Total Loss: 2.2783
+AUC: 0.9526 | Accuracy: 0.4776 | Edge loss: 0.4355 | Node loss: 1.8360 | Total Loss: 2.2715
+AUC: 0.9532 | Accuracy: 0.4769 | Edge loss: 0.4360 | Node loss: 1.8326 | Total Loss: 2.2687
+=== Epoch 2 ===
+AUC: 0.9500 | Accuracy: 0.4804 | Edge loss: 0.4369 | Node loss: 1.8262 | Total Loss: 2.2631
+AUC: 0.9496 | Accuracy: 0.4801 | Edge loss: 0.4365 | Node loss: 1.8214 | Total Loss: 2.2579
+AUC: 0.9515 | Accuracy: 0.4874 | Edge loss: 0.4365 | Node loss: 1.8029 | Total Loss: 2.2394
+AUC: 0.9527 | Accuracy: 0.4852 | Edge loss: 0.4351 | Node loss: 1.8010 | Total Loss: 2.2361
+AUC: 0.9509 | Accuracy: 0.4860 | Edge loss: 0.4377 | Node loss: 1.8051 | Total Loss: 2.2429
+AUC: 0.9526 | Accuracy: 0.4903 | Edge loss: 0.4348 | Node loss: 1.7972 | Total Loss: 2.2320
+AUC: 0.9499 | Accuracy: 0.4893 | Edge loss: 0.4371 | Node loss: 1.7916 | Total Loss: 2.2287
+=== Epoch 3 ===
+AUC: 0.9495 | Accuracy: 0.4911 | Edge loss: 0.4371 | Node loss: 1.7869 | Total Loss: 2.2240

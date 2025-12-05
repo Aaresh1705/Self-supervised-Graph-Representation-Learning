@@ -42,7 +42,8 @@ with torch.no_grad():
     z_dict = encoder(x_dict, data.edge_index_dict)
 z_paper = z_dict["paper"].detach()            
 z_fos   = z_dict["field_of_study"].detach()  
-readout = Readout(1) # single out channel -- probability
+readout = Readout(4) # compress to 4-vector for cosine similarity
+readout.to(device)
 
 def edge_index_to_loader(edge_index, z_paper, z_fos, batch_size=1024):
     pos_edge_index = edge_index

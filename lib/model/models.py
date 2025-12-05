@@ -24,15 +24,15 @@ class GraphSAGE(torch.nn.Module):
     def __init__(self, in_channels, out_channels, num_layers=2, num_classes=None):
         super().__init__()
         self.convs = torch.nn.ModuleList()
+
         self.convs.append(SAGEConv(in_channels, out_channels))
         for _ in range(num_layers - 1):
             self.convs.append(SAGEConv(out_channels, out_channels))
-        self.dropout = nn.Dropout(p=0.5)  # avoid FX tracing warning
+        self.dropout = nn.Dropout(p=0.5)
 
         if num_classes:
             self.node_classifier = self._Classifier(out_channels, num_classes)
         self.edge_classifier = self._DotProductDecoder()
-        self.weighted_loss = self._UncertaintyWeights()
 
     def forward(self, x, edge_index):
         for conv in self.convs:
@@ -52,32 +52,10 @@ class GraphSAGE(torch.nn.Module):
             return logits
 
     class _DotProductDecoder(nn.Module):
-        """
-        Simpler decoder that uses dot product between embeddings.
-        Good for symmetric relationships.
-        """
-        def __init__(self):
-            super().__init__()
-
         def forward(self, src_emb, dst_emb):
             logits = (src_emb * dst_emb).sum(dim=-1)
             return logits
 
-    class _UncertaintyWeights(nn.Module):
-        def __init__(self):
-            super().__init__()
-            # log variances (s = log(sigma^2)) initialized to 0
-            self.log_sigma_node = nn.Parameter(torch.tensor(0.0))
-            self.log_sigma_edge = nn.Parameter(torch.tensor(0.0))
-
-        def forward(self, node_loss, edge_loss):
-            # Uncertainty-based weighted loss
-            loss = (
-                           torch.exp(-self.log_sigma_node) * node_loss +
-                           torch.exp(-self.log_sigma_edge) * edge_loss +
-                           (self.log_sigma_node + self.log_sigma_edge)
-                   ) * 0.5
-            return loss
 
 def make_gae():
     gae_encoder = pyg.nn.to_hetero(pyg.nn.models.GraphSAGE(
